@@ -1,11 +1,11 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Mathieu GRENET <mathieu@mgth.fr>
-Date: Mon, 25 May 2026 13:02:56 +0200
+Date: Mon, 25 May 2026 13:23:44 +0200
 Subject: [PATCH 2/3] audio: register ad_orender, opt-in via --ad=orender
 
-Select ad_orender for TrueHD when the user puts 'orender' in --ad, the
-same opt-in style as ad_spdif. Gated on the explicit decoder name so
-default TrueHD playback is unaffected. Guarded by HAVE_ORENDER.
+Select ad_orender for TrueHD when 'orender' is in --ad (ad_spdif-style
+opt-in). Gated on the explicit decoder name so default TrueHD playback
+is unaffected. Guarded by HAVE_ORENDER.
 
 Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
 ---

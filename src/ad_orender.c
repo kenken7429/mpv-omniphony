@@ -258,11 +258,13 @@ static struct mp_decoder *create(struct mp_filter *parent,
         .config_yaml_path    = ORENDER_DEFAULT_CONFIG_PATH,
         .speaker_layout_path = NULL,
         .bridge_path         = NULL,   /* taken from the config's render.bridge_path */
+        /* OSC follows the shared config (render.osc / osc_host / osc_port /
+         * osc_rx_port): NULL/0 here = no override. Phase 5 adds --ad-orender-osc. */
         .osc_enabled         = 0,
         .osc_port_in         = 0,
         .osc_port_out        = 0,
-        .osc_bind            = "127.0.0.1",
-        .osc_host            = "127.0.0.1",
+        .osc_bind            = NULL,
+        .osc_host            = NULL,
     };
 
     p->renderer = orender_create(&cfg);
