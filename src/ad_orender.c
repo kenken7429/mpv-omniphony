@@ -214,7 +214,8 @@ static void ad_orender_process(struct mp_filter *da)
         p->checked_spatial = true;
         if (orender_is_spatial(p->renderer) != 1) {
             MP_WARN(da, "no Atmos objects detected; rendering the bed only "
-                        "(use plain TrueHD without --ad=orender)\n");
+                        "(decode this track without --ad=orender for the "
+                        "standard downmix)\n");
         }
         if (!build_chmap(p))
             MP_WARN(da, "output layout has speakers with no mpv mapping\n");
@@ -274,8 +275,10 @@ static struct mp_decoder *create(struct mp_filter *parent,
                                  struct mp_codec_params *codec,
                                  const char *decoder)
 {
-    if (!codec->codec || strcmp(codec->codec, "truehd") != 0)
+    if (!codec->codec ||
+        (strcmp(codec->codec, "truehd") != 0 && strcmp(codec->codec, "eac3") != 0))
         return NULL;
+    bool is_eac3 = strcmp(codec->codec, "eac3") == 0;
 
     struct mp_filter *da = mp_filter_create(parent, &ad_orender_filter);
     if (!da)
@@ -304,6 +307,9 @@ static struct mp_decoder *create(struct mp_filter *parent,
         .config_yaml_path    = nz(opts->config_path),
         .speaker_layout_path = NULL,
         .bridge_path         = nz(opts->bridge_path),
+        /* Tell the bridge which codec the raw access units carry: its raw
+         * transport has no data-type byte to tell TrueHD from E-AC3 apart. */
+        .codec               = codec->codec,
         .osc_enabled         = opts->osc ? 1 : 0,
         .osc_port_in         = (uint16_t)opts->osc_rx_port,
         .osc_port_out        = (uint16_t)opts->osc_port,
@@ -321,7 +327,8 @@ static struct mp_decoder *create(struct mp_filter *parent,
     }
 
     p->channels = orender_channel_count(p->renderer);
-    codec->codec_desc = "TrueHD/Atmos (orender)";
+    codec->codec_desc = is_eac3 ? "E-AC3/Atmos (orender)"
+                                : "TrueHD/Atmos (orender)";
 
     return &p->public;
 }
@@ -330,6 +337,8 @@ static void add_decoders(struct mp_decoder_list *list)
 {
     mp_add_decoder(list, "truehd", "orender",
                    "TrueHD/Atmos via liborender (VBAP object rendering)");
+    mp_add_decoder(list, "eac3", "orender",
+                   "E-AC3/Atmos (JOC) via liborender (VBAP object rendering)");
 }
 
 const struct mp_decoder_fns ad_orender = {

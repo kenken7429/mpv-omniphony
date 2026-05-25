@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Mathieu GRENET <mathieu@mgth.fr>
 Date: Mon, 25 May 2026 17:18:08 +0200
-Subject: [PATCH 5/5] audio: fix ad_orender output PTS after seek (silent
+Subject: [PATCH 5/6] audio: fix ad_orender output PTS after seek (silent
  audio)
 
 ad_orender timestamped output frames from the engine's internal sample
