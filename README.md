@@ -48,10 +48,15 @@ packaging/PKGBUILD      # Arch package (provides/conflicts mpv)
 
 - `liborender >= 0.1` and the decoder bridge installed (the `liborender` +
   `omniphony-truehd-bridge` packages).
-- A config at **`/etc/orender/config.yaml`** providing `render.bridge_path`
-  (the decoder bridge) and optionally the speaker layout. The `liborender`
-  package installs a default pointing at `/usr/lib/orender/truehd_bridge.so`.
-  ad_orender reads this config; the bridge path is **not** hardcoded.
+- The **shared omniphony config** at `~/.config/omniphony/config.yaml` (the same
+  one the `orender` CLI and studio use) providing `render.bridge_path` (the
+  decoder bridge) and optionally the speaker layout. ad_orender reads this
+  config — nothing is hardcoded. If you already run the CLI/studio, it works as
+  is; otherwise create it with at least:
+  ```yaml
+  render:
+    bridge_path: /usr/lib/orender/truehd_bridge.so
+  ```
 
 ## Build (dev)
 
