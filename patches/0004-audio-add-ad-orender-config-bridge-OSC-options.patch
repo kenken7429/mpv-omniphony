@@ -1,0 +1,158 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Mathieu GRENET <mathieu@mgth.fr>
+Date: Mon, 25 May 2026 13:51:54 +0200
+Subject: [PATCH 4/4] audio: add --ad-orender-* config/bridge/OSC options
+
+Expose per-invocation overrides for the orender decoder via an
+ad_orender_conf sub-option group (registered as ad-orender), mirroring
+ad-lavc:
+
+  --ad-orender-config             render config YAML override
+  --ad-orender-bridge-path        decoder bridge .so override
+  --ad-orender-osc                force OSC on (else follows render.osc)
+  --ad-orender-osc-port           outgoing/monitoring port
+  --ad-orender-osc-rx-port        incoming control port
+  --ad-orender-osc-bind           listener bind address
+  --ad-orender-osc-monitor-target monitoring host
+
+Empty strings / zero ports are passed to liborender as NULL/0, which
+then falls back to the shared omniphony config and built-in defaults, so
+the zero-config path (just --ad=orender) is unchanged. The MPOpts field
+is unconditional (incomplete type when orender is disabled); only the
+sub-option registration is HAVE_ORENDER-gated.
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
+---
+ audio/decode/ad_orender.c | 66 ++++++++++++++++++++++++++++++---------
+ options/options.c         |  6 ++++
+ options/options.h         |  3 ++
+ 3 files changed, 61 insertions(+), 14 deletions(-)
+
+diff --git a/audio/decode/ad_orender.c b/audio/decode/ad_orender.c
+index bcbae96..781b87d 100644
+--- a/audio/decode/ad_orender.c
++++ b/audio/decode/ad_orender.c
+@@ -31,14 +31,47 @@
+ #include "demux/stheader.h"
+ #include "filters/f_decoder_wrapper.h"
+ #include "filters/filter_internal.h"
++#include "options/m_config.h"
+ 
+ #include <orender.h>
+ 
+-/* NULL → liborender resolves the shared omniphony config
+- * (~/.config/omniphony/config.yaml), the same one the CLI + studio use. The
+- * config provides render.bridge_path and (optionally) the speaker layout.
+- * Phase 5 adds --ad-orender-config to override it. */
+-#define ORENDER_DEFAULT_CONFIG_PATH NULL
++/* --ad-orender-* options. All paths/hosts default to empty → passed to
++ * liborender as NULL, which then resolves the shared omniphony config
++ * (~/.config/omniphony/config.yaml, the same one the CLI + studio use) for the
++ * bridge path, speaker layout, and OSC settings. These options only override
++ * the config on a per-mpv-invocation basis. */
++#define OPT_BASE_STRUCT struct ad_orender_params
++struct ad_orender_params {
++    char *config_path;          // override render config YAML (else shared default)
++    char *bridge_path;          // override render.bridge_path
++    bool osc;                   // force OSC on (else follows config render.osc)
++    int osc_port;               // outgoing/monitoring port (0 = config/default)
++    int osc_rx_port;            // incoming control port  (0 = config/default 9000)
++    char *osc_bind;             // listener bind address (else config/default)
++    char *osc_monitor_target;   // monitoring host (else config/default)
++};
++
++const struct m_sub_options ad_orender_conf = {
++    .opts = (const m_option_t[]) {
++        {"config", OPT_STRING(config_path), .flags = M_OPT_FILE},
++        {"bridge-path", OPT_STRING(bridge_path), .flags = M_OPT_FILE},
++        {"osc", OPT_BOOL(osc)},
++        {"osc-port", OPT_INT(osc_port), M_RANGE(0, 65535)},
++        {"osc-rx-port", OPT_INT(osc_rx_port), M_RANGE(0, 65535)},
++        {"osc-bind", OPT_STRING(osc_bind)},
++        {"osc-monitor-target", OPT_STRING(osc_monitor_target)},
++        {0}
++    },
++    .size = sizeof(struct ad_orender_params),
++    .defaults = &(const struct ad_orender_params){
++        .osc = false,
++        .osc_port = 0,
++        .osc_rx_port = 0,
++    },
++};
++
++/* An empty option string means "unset" → pass NULL to the FFI. */
++static const char *nz(const char *s) { return (s && s[0]) ? s : NULL; }
+ 
+ /* liborender channel labels — mirror bridge_api::RChannelLabel. cbindgen runs
+  * with parse_deps=false, so orender.h does not emit this enum; keep in sync. */
+@@ -253,18 +286,23 @@ static struct mp_decoder *create(struct mp_filter *parent,
+     p->sample_rate = codec->samplerate;
+     p->public.f = da;
+ 
++    struct ad_orender_params *opts =
++        mp_get_config_group(da, da->global, &ad_orender_conf);
++
+     OrenderConfig cfg = {
+         .sample_rate         = p->sample_rate,
+-        .config_yaml_path    = ORENDER_DEFAULT_CONFIG_PATH,
++        /* NULL → liborender resolves the shared omniphony config; these only
++         * override it for this mpv invocation. OSC: --ad-orender-osc forces it
++         * on, otherwise osc_enabled=0 lets liborender follow render.osc. Ports/
++         * host/bind 0/NULL fall back to the config then the built-in defaults. */
++        .config_yaml_path    = nz(opts->config_path),
+         .speaker_layout_path = NULL,
+-        .bridge_path         = NULL,   /* taken from the config's render.bridge_path */
+-        /* OSC follows the shared config (render.osc / osc_host / osc_port /
+-         * osc_rx_port): NULL/0 here = no override. Phase 5 adds --ad-orender-osc. */
+-        .osc_enabled         = 0,
+-        .osc_port_in         = 0,
+-        .osc_port_out        = 0,
+-        .osc_bind            = NULL,
+-        .osc_host            = NULL,
++        .bridge_path         = nz(opts->bridge_path),
++        .osc_enabled         = opts->osc ? 1 : 0,
++        .osc_port_in         = (uint16_t)opts->osc_rx_port,
++        .osc_port_out        = (uint16_t)opts->osc_port,
++        .osc_bind            = nz(opts->osc_bind),
++        .osc_host            = nz(opts->osc_monitor_target),
+     };
+ 
+     p->renderer = orender_create(&cfg);
+diff --git a/options/options.c b/options/options.c
+index 716c3e6..1c653a0 100644
+--- a/options/options.c
++++ b/options/options.c
+@@ -72,6 +72,9 @@ extern const struct m_sub_options demux_lavf_conf;
+ extern const struct m_sub_options demux_mkv_conf;
+ extern const struct m_sub_options vd_lavc_conf;
+ extern const struct m_sub_options ad_lavc_conf;
++#if HAVE_ORENDER
++extern const struct m_sub_options ad_orender_conf;
++#endif
+ extern const struct m_sub_options hwdec_conf;
+ extern const struct m_sub_options input_config;
+ extern const struct m_sub_options encode_config;
+@@ -695,6 +698,9 @@ static const m_option_t mp_opts[] = {
+     {"", OPT_SUBSTRUCT(dec_wrapper, dec_wrapper_conf)},
+     {"", OPT_SUBSTRUCT(vd_lavc_params, vd_lavc_conf)},
+     {"ad-lavc", OPT_SUBSTRUCT(ad_lavc_params, ad_lavc_conf)},
++#if HAVE_ORENDER
++    {"ad-orender", OPT_SUBSTRUCT(ad_orender_params, ad_orender_conf)},
++#endif
+ 
+     {"", OPT_SUBSTRUCT(hwdec_opts, hwdec_conf)},
+ 
+diff --git a/options/options.h b/options/options.h
+index 12dafea..9ef62c6 100644
+--- a/options/options.h
++++ b/options/options.h
+@@ -380,6 +380,9 @@ typedef struct MPOpts {
+ 
+     struct vd_lavc_params *vd_lavc_params;
+     struct ad_lavc_params *ad_lavc_params;
++    // Always present (incomplete type when orender is disabled); only the
++    // ad-orender sub-option registration in options.c is HAVE_ORENDER-gated.
++    struct ad_orender_params *ad_orender_params;
+ 
+     struct hwdec_opts *hwdec_opts;
+ 

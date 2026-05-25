@@ -10,13 +10,15 @@ This repo holds **only** the mpv-side integration: the decoder source
 CI. The renderer itself (`liborender.so` + the TrueHD decoder bridge) is built
 and packaged from the `Omniphony` repo (`packaging/arch/`).
 
-> **Status:** Phase 4, pinned to mpv **v0.41.0**. The decoder is written
-> against the real mpv 0.41 decoder framework (`mp_filter`/`mp_decoder_fns`)
-> and the verified `liborender` C API, and lives on the `orender` branch of the
-> mpv fork (`mgth/mpv`). Validated: `meson setup -Dorender=enabled` detects
-> liborender and both `ad_orender.c` and `f_decoder_wrapper.c` **compile**
-> (object-level). Not yet validated: a full link + actual Atmos playback (needs
-> liborender + the bridge installed) and the seek/PTS behaviour.
+> **Status:** Phase 5, pinned to mpv **v0.41.0**. The decoder targets the real
+> mpv 0.41 decoder framework (`mp_filter`/`mp_decoder_fns`) and the verified
+> `liborender` C API, on the `orender` branch of the mpv fork (`mgth/mpv`).
+> Validated end-to-end: full `meson -Dorender=enabled` build, real Atmos
+> playback (12/11-ch float output, chmap from the config layout), config-driven
+> OSC reaching omniphony-studio, and the `--ad-orender-*` overrides (e.g.
+> `--ad-orender-osc-rx-port=N` binds the listener on N). Open: automatic
+> non-Atmos fallback to `ad_lavc` (currently the bed is VBAP-rendered instead),
+> custom chmaps for top-side speakers (9.1.6), and long-run seek/PTS drift.
 
 ## Layout
 
@@ -39,8 +41,9 @@ packaging/PKGBUILD      # Arch package (provides/conflicts mpv)
    resampler / audio filter chain still applies, unlike spdif passthrough).
 3. It's opt-in: the decoder is only selected for TrueHD when `orender` is in the
    `--ad` list, so default TrueHD playback is untouched. The first packet
-   resolves Atmos-vs-plain (`orender_is_spatial`); automatic fallback to
-   `ad_lavc` for non-Atmos is Phase 5.
+   resolves Atmos-vs-plain (`orender_is_spatial`); for non-Atmos TrueHD the
+   bed is still VBAP-rendered to the layout (automatic fallback to `ad_lavc`
+   is a future refinement — use plain `--ad=` to bypass orender entirely).
 4. The output channel map comes from `orender_channel_layout` (per-speaker
    labels → `mp_chmap`).
 
@@ -78,9 +81,24 @@ scripts/regenerate-patches.sh /path/to/mpv-fork v0.41.0
 mpv --ad=orender film.atmos.mkv          # opt-in; default playback is untouched
 ```
 
-Phase 4 uses compile-time defaults (7.1.4 layout, packaged bridge path). The
-`--ad-orender-*` options (config path, OSC) and automatic non-Atmos fallback to
-`ad_lavc` land in Phase 5 — see the spec §6.
+With no options, everything (bridge path, speaker layout, OSC) comes from the
+shared `~/.config/omniphony/config.yaml`. Per-invocation overrides:
+
+| Option | Overrides |
+| --- | --- |
+| `--ad-orender-config=<path>` | the render config YAML (else the shared default) |
+| `--ad-orender-bridge-path=<path>` | `render.bridge_path` (the decoder bridge `.so`) |
+| `--ad-orender-osc` | force OSC on (else follows `render.osc` in the config) |
+| `--ad-orender-osc-port=<n>` | outgoing/monitoring port |
+| `--ad-orender-osc-rx-port=<n>` | incoming control port (studio registers here; default 9000) |
+| `--ad-orender-osc-bind=<addr>` | listener bind address |
+| `--ad-orender-osc-monitor-target=<host>` | monitoring host |
+
+Empty/zero values fall back to the config then the built-in defaults, so the
+zero-config `--ad=orender` path is unchanged. **OSC + studio:** either set
+`render.osc: true` in the config or pass `--ad-orender-osc`; the renderer then
+listens on 9000 (the rendezvous studio registers to) — studio connects on its
+own. Note the shared config means the standalone CLI would also enable OSC.
 
 ## mpv fork workflow
 

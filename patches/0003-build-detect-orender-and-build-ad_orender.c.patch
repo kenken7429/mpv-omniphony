@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Mathieu GRENET <mathieu@mgth.fr>
 Date: Mon, 25 May 2026 13:23:44 +0200
-Subject: [PATCH 3/3] build: detect orender and build ad_orender.c
+Subject: [PATCH 3/4] build: detect orender and build ad_orender.c
 
 Add the 'orender' feature option (auto), detect liborender >= 0.1 via
 pkg-config, and compile audio/decode/ad_orender.c when found.

@@ -31,14 +31,47 @@
 #include "demux/stheader.h"
 #include "filters/f_decoder_wrapper.h"
 #include "filters/filter_internal.h"
+#include "options/m_config.h"
 
 #include <orender.h>
 
-/* NULL → liborender resolves the shared omniphony config
- * (~/.config/omniphony/config.yaml), the same one the CLI + studio use. The
- * config provides render.bridge_path and (optionally) the speaker layout.
- * Phase 5 adds --ad-orender-config to override it. */
-#define ORENDER_DEFAULT_CONFIG_PATH NULL
+/* --ad-orender-* options. All paths/hosts default to empty → passed to
+ * liborender as NULL, which then resolves the shared omniphony config
+ * (~/.config/omniphony/config.yaml, the same one the CLI + studio use) for the
+ * bridge path, speaker layout, and OSC settings. These options only override
+ * the config on a per-mpv-invocation basis. */
+#define OPT_BASE_STRUCT struct ad_orender_params
+struct ad_orender_params {
+    char *config_path;          // override render config YAML (else shared default)
+    char *bridge_path;          // override render.bridge_path
+    bool osc;                   // force OSC on (else follows config render.osc)
+    int osc_port;               // outgoing/monitoring port (0 = config/default)
+    int osc_rx_port;            // incoming control port  (0 = config/default 9000)
+    char *osc_bind;             // listener bind address (else config/default)
+    char *osc_monitor_target;   // monitoring host (else config/default)
+};
+
+const struct m_sub_options ad_orender_conf = {
+    .opts = (const m_option_t[]) {
+        {"config", OPT_STRING(config_path), .flags = M_OPT_FILE},
+        {"bridge-path", OPT_STRING(bridge_path), .flags = M_OPT_FILE},
+        {"osc", OPT_BOOL(osc)},
+        {"osc-port", OPT_INT(osc_port), M_RANGE(0, 65535)},
+        {"osc-rx-port", OPT_INT(osc_rx_port), M_RANGE(0, 65535)},
+        {"osc-bind", OPT_STRING(osc_bind)},
+        {"osc-monitor-target", OPT_STRING(osc_monitor_target)},
+        {0}
+    },
+    .size = sizeof(struct ad_orender_params),
+    .defaults = &(const struct ad_orender_params){
+        .osc = false,
+        .osc_port = 0,
+        .osc_rx_port = 0,
+    },
+};
+
+/* An empty option string means "unset" → pass NULL to the FFI. */
+static const char *nz(const char *s) { return (s && s[0]) ? s : NULL; }
 
 /* liborender channel labels — mirror bridge_api::RChannelLabel. cbindgen runs
  * with parse_deps=false, so orender.h does not emit this enum; keep in sync. */
@@ -253,18 +286,23 @@ static struct mp_decoder *create(struct mp_filter *parent,
     p->sample_rate = codec->samplerate;
     p->public.f = da;
 
+    struct ad_orender_params *opts =
+        mp_get_config_group(da, da->global, &ad_orender_conf);
+
     OrenderConfig cfg = {
         .sample_rate         = p->sample_rate,
-        .config_yaml_path    = ORENDER_DEFAULT_CONFIG_PATH,
+        /* NULL → liborender resolves the shared omniphony config; these only
+         * override it for this mpv invocation. OSC: --ad-orender-osc forces it
+         * on, otherwise osc_enabled=0 lets liborender follow render.osc. Ports/
+         * host/bind 0/NULL fall back to the config then the built-in defaults. */
+        .config_yaml_path    = nz(opts->config_path),
         .speaker_layout_path = NULL,
-        .bridge_path         = NULL,   /* taken from the config's render.bridge_path */
-        /* OSC follows the shared config (render.osc / osc_host / osc_port /
-         * osc_rx_port): NULL/0 here = no override. Phase 5 adds --ad-orender-osc. */
-        .osc_enabled         = 0,
-        .osc_port_in         = 0,
-        .osc_port_out        = 0,
-        .osc_bind            = NULL,
-        .osc_host            = NULL,
+        .bridge_path         = nz(opts->bridge_path),
+        .osc_enabled         = opts->osc ? 1 : 0,
+        .osc_port_in         = (uint16_t)opts->osc_rx_port,
+        .osc_port_out        = (uint16_t)opts->osc_port,
+        .osc_bind            = nz(opts->osc_bind),
+        .osc_host            = nz(opts->osc_monitor_target),
     };
 
     p->renderer = orender_create(&cfg);
