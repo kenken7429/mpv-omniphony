@@ -1,0 +1,50 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Mathieu GRENET <mathieu@mgth.fr>
+Date: Mon, 25 May 2026 17:18:08 +0200
+Subject: [PATCH 5/5] audio: fix ad_orender output PTS after seek (silent
+ audio)
+
+ad_orender timestamped output frames from the engine's internal sample
+clock (out_pts_us), which orender_reset() zeroes on every seek. After a
+seek the audio PTS therefore restarted near 0 while the video was at the
+seek target, so mpv discarded all "past" audio: video resumed but sound
+went silent, even though the renderer kept producing samples (studio's
+VU meters stayed active).
+
+Timestamp the output aframe from the demuxer packet PTS instead, exactly
+like ad_spdif. The packet PTS tracks seeks, so audio stays in sync.
+
+Verified: encoding 2s from a 10-min seek offset yields non-silent audio
+(mean -10.5 dB) where it was previously dropped.
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
+---
+ audio/decode/ad_orender.c | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/audio/decode/ad_orender.c b/audio/decode/ad_orender.c
+index 781b87d..2e2bcf4 100644
+--- a/audio/decode/ad_orender.c
++++ b/audio/decode/ad_orender.c
+@@ -185,6 +185,7 @@ static void ad_orender_process(struct mp_filter *da)
+     struct demux_packet *mpkt = inframe.data;
+     struct mp_aframe *out = NULL;
+     bool failed = false;
++    double pts = mpkt->pts;   /* demuxer timestamp; drives A/V sync (see below) */
+ 
+     int ch = p->channels > 0 ? p->channels : 1;
+     size_t capacity = (size_t)4096 * (size_t)ch;
+@@ -226,7 +227,12 @@ static void ad_orender_process(struct mp_filter *da)
+     mp_aframe_set_format(out, AF_FORMAT_FLOAT);   /* interleaved float32 */
+     mp_aframe_set_rate(out, p->sample_rate);
+     mp_aframe_set_chmap(out, &p->chmap);
+-    mp_aframe_set_pts(out, out_pts_us / 1e6);
++    /* Timestamp from the demuxer packet PTS (like ad_spdif), NOT the engine's
++     * internal sample clock (out_pts_us): that clock resets to 0 on seek
++     * (orender_reset), which puts the audio in the past so mpv drops every
++     * frame after a seek — video keeps playing but audio goes silent while the
++     * renderer is still producing samples. The packet PTS tracks seeks. */
++    mp_aframe_set_pts(out, pts);
+ 
+     /* format + rate + chmap must be set before allocating the data buffer. */
+     if (!mp_aframe_alloc_data(out, n_frames)) {

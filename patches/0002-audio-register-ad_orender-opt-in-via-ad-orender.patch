@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Mathieu GRENET <mathieu@mgth.fr>
 Date: Mon, 25 May 2026 13:23:44 +0200
-Subject: [PATCH 2/4] audio: register ad_orender, opt-in via --ad=orender
+Subject: [PATCH 2/5] audio: register ad_orender, opt-in via --ad=orender
 
 Select ad_orender for TrueHD when 'orender' is in --ad (ad_spdif-style
 opt-in). Gated on the explicit decoder name so default TrueHD playback

@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Mathieu GRENET <mathieu@mgth.fr>
 Date: Mon, 25 May 2026 13:23:44 +0200
-Subject: [PATCH 1/4] audio: add ad_orender decoder (TrueHD/Atmos via
+Subject: [PATCH 1/5] audio: add ad_orender decoder (TrueHD/Atmos via
  liborender)
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

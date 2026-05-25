@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Mathieu GRENET <mathieu@mgth.fr>
 Date: Mon, 25 May 2026 13:51:54 +0200
-Subject: [PATCH 4/4] audio: add --ad-orender-* config/bridge/OSC options
+Subject: [PATCH 4/5] audio: add --ad-orender-* config/bridge/OSC options
 
 Expose per-invocation overrides for the orender decoder via an
 ad_orender_conf sub-option group (registered as ad-orender), mirroring

@@ -185,6 +185,7 @@ static void ad_orender_process(struct mp_filter *da)
     struct demux_packet *mpkt = inframe.data;
     struct mp_aframe *out = NULL;
     bool failed = false;
+    double pts = mpkt->pts;   /* demuxer timestamp; drives A/V sync (see below) */
 
     int ch = p->channels > 0 ? p->channels : 1;
     size_t capacity = (size_t)4096 * (size_t)ch;
@@ -226,7 +227,12 @@ static void ad_orender_process(struct mp_filter *da)
     mp_aframe_set_format(out, AF_FORMAT_FLOAT);   /* interleaved float32 */
     mp_aframe_set_rate(out, p->sample_rate);
     mp_aframe_set_chmap(out, &p->chmap);
-    mp_aframe_set_pts(out, out_pts_us / 1e6);
+    /* Timestamp from the demuxer packet PTS (like ad_spdif), NOT the engine's
+     * internal sample clock (out_pts_us): that clock resets to 0 on seek
+     * (orender_reset), which puts the audio in the past so mpv drops every
+     * frame after a seek — video keeps playing but audio goes silent while the
+     * renderer is still producing samples. The packet PTS tracks seeks. */
+    mp_aframe_set_pts(out, pts);
 
     /* format + rate + chmap must be set before allocating the data buffer. */
     if (!mp_aframe_alloc_data(out, n_frames)) {
