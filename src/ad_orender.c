@@ -9,10 +9,10 @@
  * decode (via a runtime bridge plugin) and the spatial render; this file only
  * shuttles packets in and aframes out through the filter pin protocol.
  *
- * Phase 4: opt-in only (so plain TrueHD playback is untouched), compile-time
- * defaults (7.1.4 layout via a NULL config, the packaged bridge path). The
- * `--ad-orender-*` options, the is_spatial→ad_lavc fallback, and custom chmaps
- * are Phase 5.
+ * Phase 4: opt-in only (so plain TrueHD playback is untouched). The decoder
+ * bridge and speaker layout come from the config YAML (render.bridge_path),
+ * default /etc/orender/config.yaml. The `--ad-orender-*` options, the
+ * is_spatial→ad_lavc fallback, and custom chmaps are Phase 5.
  */
 
 #include <stdbool.h>
