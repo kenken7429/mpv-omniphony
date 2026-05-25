@@ -1,0 +1,43 @@
+name: build
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: '0 6 * * 1'   # weekly: catch upstream mpv master drift
+
+jobs:
+  build-mpv:
+    runs-on: ubuntu-latest
+    env:
+      MPV_TAG: v0.40.0     # keep in sync with scripts/ and PKGBUILD
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            meson ninja-build pkg-config gcc \
+            libavcodec-dev libavformat-dev libavutil-dev libswscale-dev \
+            libass-dev libplacebo-dev liblua5.2-dev libx11-dev
+
+      # liborender is not in apt. For CI we install a *mock* that satisfies the
+      # header + soname so the patched mpv links; real playback is tested
+      # downstream against the actual package.
+      - name: Build & install a mock liborender
+        run: bash .github/scripts/mock-liborender.sh
+
+      - name: Apply patches onto pinned mpv
+        run: bash scripts/apply-patches.sh "$MPV_TAG"
+
+      - name: Configure & build
+        run: |
+          cd "build/mpv-${MPV_TAG}"
+          meson setup _b -Dorender=enabled
+          meson compile -C _b
+
+      - name: Smoke test
+        run: |
+          cd "build/mpv-${MPV_TAG}"
+          ./_b/mpv --version

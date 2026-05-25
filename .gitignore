@@ -1,0 +1,10 @@
+# patched mpv checkouts / build trees (scripts/apply-patches.sh)
+/build/
+# in-place meson build dirs
+_b/
+builddir/
+# makepkg artifacts (PKGBUILD lives in packaging/)
+/packaging/src/
+/packaging/pkg/
+*.pkg.tar.*
+*.tar.gz

@@ -1,0 +1,5 @@
+# Snippet appended to mpv's meson_options.txt by patch 0003.
+# Kept here as the canonical source for the option definition.
+
+option('orender', type: 'feature', value: 'auto',
+       description: 'Atmos audio decoder via the orender (liborender) library')

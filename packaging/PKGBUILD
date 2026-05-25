@@ -1,0 +1,53 @@
+# Maintainer: Mathieu Grenet <mathieu@mgth.fr>
+#
+# mpv-orender — mpv built with the ad_orender Atmos decoder (liborender).
+# Replaces the stock mpv. Plain (non-Atmos) TrueHD still plays via ad_lavc.
+#
+# Lives in packaging/ (not the repo root) so makepkg's $srcdir/$pkgdir don't
+# collide with the repo's own src/ directory.
+#
+# NOTE: requires ../patches/ to be populated (see scripts/regenerate-patches.sh).
+# Adjust _mpvver to a real released tag and fill the sha256sums before release.
+
+pkgname=mpv-orender
+_mpvver=0.40.0           # pinned mpv release tag (without the leading 'v')
+pkgver=$_mpvver
+pkgrel=1
+pkgdesc="mpv with the orender Atmos decoder (TrueHD/Atmos object rendering via liborender)"
+arch=('x86_64')
+url="https://github.com/mgth/mpv-orender"
+license=('GPL-2.0-or-later')
+depends=('liborender>=0.1' 'ffmpeg' 'libass' 'libplacebo' 'lua' 'libx11' 'mesa')
+makedepends=('meson' 'ninja' 'python')
+provides=("mpv=$_mpvver")
+conflicts=('mpv')
+source=("mpv-$_mpvver.tar.gz::https://github.com/mpv-player/mpv/archive/v$_mpvver.tar.gz")
+sha256sums=('SKIP')      # TODO: pin the mpv tarball checksum for a release
+
+_repo="$startdir/.."     # mpv-orender repo root (src/, patches/)
+
+prepare() {
+    cd "$srcdir/mpv-$_mpvver"
+    cp "$_repo/src/ad_orender.c" audio/decode/ad_orender.c
+    shopt -s nullglob
+    local patches=("$_repo"/patches/*.patch)
+    if [ ${#patches[@]} -eq 0 ]; then
+        echo "no patches in ../patches — generate them first" >&2
+        return 1
+    fi
+    for p in "${patches[@]}"; do
+        echo "applying ${p##*/}"
+        patch -p1 < "$p"
+    done
+}
+
+build() {
+    cd "$srcdir/mpv-$_mpvver"
+    arch-meson build -Dorender=enabled
+    meson compile -C build
+}
+
+package() {
+    cd "$srcdir/mpv-$_mpvver"
+    meson install -C build --destdir="$pkgdir"
+}
