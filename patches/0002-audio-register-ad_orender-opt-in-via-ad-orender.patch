@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Mathieu GRENET <mathieu@mgth.fr>
-Date: Mon, 25 May 2026 12:15:50 +0200
+Date: Mon, 25 May 2026 12:42:12 +0200
 Subject: [PATCH 2/3] audio: register ad_orender, opt-in via --ad=orender
 
 Select ad_orender for TrueHD when the user puts 'orender' in --ad, the

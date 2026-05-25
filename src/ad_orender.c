@@ -32,9 +32,11 @@
 
 #include <orender.h>
 
-/* Phase 4 defaults (replaced by --ad-orender-* options in Phase 5). */
-#define ORENDER_DEFAULT_BRIDGE_PATH "/usr/lib/orender/truehd_bridge.so"
-#define ORENDER_DEFAULT_CONFIG_PATH NULL   /* NULL → liborender 7.1.4 preset */
+/* Phase 4 default config path (replaced by --ad-orender-config in Phase 5).
+ * The config YAML is the source of truth for the decoder bridge
+ * (render.bridge_path) and, optionally, the speaker layout (else liborender's
+ * 7.1.4 preset). */
+#define ORENDER_DEFAULT_CONFIG_PATH "/etc/orender/config.yaml"
 
 /* liborender channel labels — mirror bridge_api::RChannelLabel. cbindgen runs
  * with parse_deps=false, so orender.h does not emit this enum; keep in sync. */
@@ -189,8 +191,16 @@ static void ad_orender_process(struct mp_filter *da)
     mp_aframe_set_format(out, AF_FORMAT_FLOAT);   /* interleaved float32 */
     mp_aframe_set_rate(out, p->sample_rate);
     mp_aframe_set_chmap(out, &p->chmap);
-    mp_aframe_set_size(out, n_frames);
     mp_aframe_set_pts(out, out_pts_us / 1e6);
+
+    /* format + rate + chmap must be set before allocating the data buffer. */
+    if (!mp_aframe_alloc_data(out, n_frames)) {
+        MP_ERR(da, "failed to allocate output frame (%zu frames, %u ch)\n",
+               n_frames, n_ch);
+        TA_FREEP(&out);
+        failed = true;
+        goto done;
+    }
 
     uint8_t **data = mp_aframe_get_data_rw(out);
     if (!data || !data[0]) {
@@ -245,7 +255,7 @@ static struct mp_decoder *create(struct mp_filter *parent,
         .sample_rate         = p->sample_rate,
         .config_yaml_path    = ORENDER_DEFAULT_CONFIG_PATH,
         .speaker_layout_path = NULL,
-        .bridge_path         = ORENDER_DEFAULT_BRIDGE_PATH,
+        .bridge_path         = NULL,   /* taken from the config's render.bridge_path */
         .osc_enabled         = 0,
         .osc_port_in         = 0,
         .osc_port_out        = 0,
@@ -255,7 +265,8 @@ static struct mp_decoder *create(struct mp_filter *parent,
 
     p->renderer = orender_create(&cfg);
     if (!p->renderer) {
-        MP_ERR(da, "orender_create failed (bridge=%s)\n", cfg.bridge_path);
+        MP_ERR(da, "orender_create failed (config=%s — check render.bridge_path)\n",
+               ORENDER_DEFAULT_CONFIG_PATH);
         talloc_free(da);
         return NULL;
     }

@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Mathieu GRENET <mathieu@mgth.fr>
-Date: Mon, 25 May 2026 12:15:50 +0200
+Date: Mon, 25 May 2026 12:42:12 +0200
 Subject: [PATCH 1/3] audio: add ad_orender decoder (TrueHD/Atmos via
  liborender)
 
@@ -8,21 +8,21 @@ A non-lavc mp_filter audio decoder (modeled on ad_spdif) that renders
 TrueHD/Atmos objects to N-channel float PCM via liborender, instead of
 letting FFmpeg downmix. Outputs AF_FORMAT_FLOAT (normal PCM), so the
 native resampler / audio filter chain still applies (unlike ad_spdif's
-passthrough). Compile-time defaults for now (7.1.4 layout, packaged
-bridge path); --ad-orender-* options come later.
+passthrough). The decoder bridge + layout come from the config YAML
+(render.bridge_path); default config /etc/orender/config.yaml.
 
 Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
 ---
- audio/decode/ad_orender.c | 278 ++++++++++++++++++++++++++++++++++++++
- 1 file changed, 278 insertions(+)
+ audio/decode/ad_orender.c | 289 ++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 289 insertions(+)
  create mode 100644 audio/decode/ad_orender.c
 
 diff --git a/audio/decode/ad_orender.c b/audio/decode/ad_orender.c
 new file mode 100644
-index 0000000..9ec644e
+index 0000000..5a045a1
 --- /dev/null
 +++ b/audio/decode/ad_orender.c
-@@ -0,0 +1,278 @@
+@@ -0,0 +1,289 @@
 +/*
 + * ad_orender.c — mpv audio decoder that renders TrueHD/Atmos through liborender.
 + *
@@ -57,9 +57,11 @@ index 0000000..9ec644e
 +
 +#include <orender.h>
 +
-+/* Phase 4 defaults (replaced by --ad-orender-* options in Phase 5). */
-+#define ORENDER_DEFAULT_BRIDGE_PATH "/usr/lib/orender/truehd_bridge.so"
-+#define ORENDER_DEFAULT_CONFIG_PATH NULL   /* NULL → liborender 7.1.4 preset */
++/* Phase 4 default config path (replaced by --ad-orender-config in Phase 5).
++ * The config YAML is the source of truth for the decoder bridge
++ * (render.bridge_path) and, optionally, the speaker layout (else liborender's
++ * 7.1.4 preset). */
++#define ORENDER_DEFAULT_CONFIG_PATH "/etc/orender/config.yaml"
 +
 +/* liborender channel labels — mirror bridge_api::RChannelLabel. cbindgen runs
 + * with parse_deps=false, so orender.h does not emit this enum; keep in sync. */
@@ -214,8 +216,16 @@ index 0000000..9ec644e
 +    mp_aframe_set_format(out, AF_FORMAT_FLOAT);   /* interleaved float32 */
 +    mp_aframe_set_rate(out, p->sample_rate);
 +    mp_aframe_set_chmap(out, &p->chmap);
-+    mp_aframe_set_size(out, n_frames);
 +    mp_aframe_set_pts(out, out_pts_us / 1e6);
++
++    /* format + rate + chmap must be set before allocating the data buffer. */
++    if (!mp_aframe_alloc_data(out, n_frames)) {
++        MP_ERR(da, "failed to allocate output frame (%zu frames, %u ch)\n",
++               n_frames, n_ch);
++        TA_FREEP(&out);
++        failed = true;
++        goto done;
++    }
 +
 +    uint8_t **data = mp_aframe_get_data_rw(out);
 +    if (!data || !data[0]) {
@@ -270,7 +280,7 @@ index 0000000..9ec644e
 +        .sample_rate         = p->sample_rate,
 +        .config_yaml_path    = ORENDER_DEFAULT_CONFIG_PATH,
 +        .speaker_layout_path = NULL,
-+        .bridge_path         = ORENDER_DEFAULT_BRIDGE_PATH,
++        .bridge_path         = NULL,   /* taken from the config's render.bridge_path */
 +        .osc_enabled         = 0,
 +        .osc_port_in         = 0,
 +        .osc_port_out        = 0,
@@ -280,7 +290,8 @@ index 0000000..9ec644e
 +
 +    p->renderer = orender_create(&cfg);
 +    if (!p->renderer) {
-+        MP_ERR(da, "orender_create failed (bridge=%s)\n", cfg.bridge_path);
++        MP_ERR(da, "orender_create failed (config=%s — check render.bridge_path)\n",
++               ORENDER_DEFAULT_CONFIG_PATH);
 +        talloc_free(da);
 +        return NULL;
 +    }
