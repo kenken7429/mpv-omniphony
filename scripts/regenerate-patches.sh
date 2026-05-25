@@ -12,8 +12,10 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# BASE_REF must match the tag apply-patches.sh checks out (branch `orender` off
+# the pinned tag, generate patches relative to it).
 FORK="${1:?usage: regenerate-patches.sh /path/to/mpv-fork [BASE_REF]}"
-BASE_REF="${2:-master}"
+BASE_REF="${2:-v0.41.0}"
 
 if [ ! -d "$FORK/.git" ]; then
     echo "!! $FORK is not a git repo" >&2

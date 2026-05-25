@@ -1,0 +1,44 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Mathieu GRENET <mathieu@mgth.fr>
+Date: Mon, 25 May 2026 12:15:50 +0200
+Subject: [PATCH 3/3] build: detect orender and build ad_orender.c
+
+Add the 'orender' feature option (auto), detect liborender >= 0.1 via
+pkg-config, and compile audio/decode/ad_orender.c when found.
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
+---
+ meson.build   | 7 +++++++
+ meson.options | 1 +
+ 2 files changed, 8 insertions(+)
+
+diff --git a/meson.build b/meson.build
+index fb10be5..ea5fbfd 100644
+--- a/meson.build
++++ b/meson.build
+@@ -672,6 +672,13 @@ if features['libarchive']
+                      'stream/stream_libarchive.c')
+ endif
+ 
++orender = dependency('orender', version: '>= 0.1', required: get_option('orender'))
++features += {'orender': orender.found()}
++if features['orender']
++    dependencies += orender
++    sources += files('audio/decode/ad_orender.c')
++endif
++
+ libavdevice = dependency('libavdevice', version: '>= 60.3.100', required: get_option('libavdevice'))
+ features += {'libavdevice': libavdevice.found()}
+ if features['libavdevice']
+diff --git a/meson.options b/meson.options
+index 52782f7..a480937 100644
+--- a/meson.options
++++ b/meson.options
+@@ -18,6 +18,7 @@ option('jpeg', type: 'feature', value: 'auto', description: 'libjpeg image write
+ option('lcms2', type: 'feature', value: 'auto', description: 'LCMS2 support')
+ option('libarchive', type: 'feature', value: 'auto', description: 'libarchive wrapper for reading zip files and more')
+ option('libavdevice', type: 'feature', value: 'auto', description: 'libavdevice')
++option('orender', type: 'feature', value: 'auto', description: 'Atmos audio decoder via the orender (liborender) library')
+ option('libbluray', type: 'feature', value: 'auto', description: 'Bluray support')
+ option('lua',
+     type: 'combo',

@@ -1,24 +1,21 @@
 # Patches
 
 These `.patch` files are **generated** from the mpv fork's `orender` branch by
-`scripts/regenerate-patches.sh` (`git format-patch master..orender`). Do not
-hand-edit them — edit the fork, then regenerate.
+`scripts/regenerate-patches.sh` (`git format-patch v0.41.0..orender`). Do not
+hand-edit them — edit the fork, then regenerate. `src/ad_orender.c` is the
+readable copy of the decoder source from which patch 0001 is produced; keep the
+two in sync.
 
-`src/ad_orender.c` is the decoder source; `scripts/apply-patches.sh` and the
-PKGBUILD copy it into `audio/decode/` before applying the patches, so the
-patches only need to touch *existing* mpv files.
-
-Expected patches (against the pinned mpv tag — see `scripts/`):
+Generated against mpv **v0.41.0** (`filters/f_decoder_wrapper.{c,h}` is the
+current decoder registry; mpv ≤ 0.36's `ad_functions`/`ad.c` model is gone):
 
 | Patch | Touches | What it does |
 |-------|---------|--------------|
-| `0001-add-ad-orender-decoder.patch`        | `audio/decode/ad_orender.c` | Adds the decoder source (or the script copies `src/ad_orender.c`). |
-| `0002-register-ad-orender-in-decoder-list.patch` | `audio/decode/ad.c` | `extern const struct ad_functions ad_orender;` + entry in `ad_drivers[]` **before** `ad_lavc`. |
-| `0003-meson-detect-orender.patch`          | `meson.build`, `meson_options.txt` | `dependency('orender', '>= 0.1')`, the `orender` feature option, and `sources += files('audio/decode/ad_orender.c')` when found. |
+| `0001-audio-add-ad_orender-decoder-*.patch` | `audio/decode/ad_orender.c` | Adds the `mp_filter`/`mp_decoder_fns` decoder. |
+| `0002-audio-register-ad_orender-*.patch` | `filters/f_decoder_wrapper.{c,h}` | `extern … ad_orender;` + select it for TrueHD when `--ad` lists `orender` (`HAVE_ORENDER`-guarded). |
+| `0003-build-detect-orender-*.patch` | `meson.build`, `meson.options` | `orender` feature option, `dependency('orender', '>= 0.1')`, and `sources += files('audio/decode/ad_orender.c')` when found. |
 
-The meson fragment and the option are mirrored in the repo root
-(`../meson-options.txt`) and in the spec (§5) so they can be reconstructed if a
-patch goes stale against a new mpv release.
-
-This directory is empty until the fork branch exists and the patches are
-generated — see the top-level README for the fork workflow.
+Validated on v0.41.0: `meson setup -Dorender=enabled` detects liborender and
+both `ad_orender.c` and `f_decoder_wrapper.c` compile (object-level). A full
+link + playback is the downstream build's job (needs liborender + the bridge
+installed). The meson option is also mirrored in `../meson-options.txt`.

@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# Clone mpv at the pinned tag, drop in ad_orender.c, and apply the patches.
+# Clone mpv at the pinned tag and apply the patches (patch 0001 adds
+# ad_orender.c; 0002/0003 wire it into the decoder list + build).
 # Produces a buildable mpv tree at ./build/mpv-<tag>.
 #
 # Usage: scripts/apply-patches.sh [MPV_TAG]
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-MPV_TAG="${1:-${MPV_TAG:-v0.40.0}}"   # pin; adjust to a real released tag
+MPV_TAG="${1:-${MPV_TAG:-v0.41.0}}"   # pinned mpv release tag
 MPV_URL="https://github.com/mpv-player/mpv.git"
 WORKDIR="$REPO_ROOT/build"
 SRC="$WORKDIR/mpv-${MPV_TAG}"
@@ -22,14 +23,10 @@ else
     git -C "$SRC" clean -fdx
 fi
 
-echo ">> copying ad_orender.c into the tree"
-cp "$REPO_ROOT/src/ad_orender.c" "$SRC/audio/decode/ad_orender.c"
-
 shopt -s nullglob
 patches=("$REPO_ROOT"/patches/*.patch)
 if [ ${#patches[@]} -eq 0 ]; then
     echo "!! no patches in patches/ — generate them first (regenerate-patches.sh)"
-    echo "   the tree has ad_orender.c but is NOT wired into the build yet."
     exit 1
 fi
 

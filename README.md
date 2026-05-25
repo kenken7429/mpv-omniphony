@@ -10,17 +10,20 @@ This repo holds **only** the mpv-side integration: the decoder source
 CI. The renderer itself (`liborender.so` + the TrueHD decoder bridge) is built
 and packaged from the `Omniphony` repo (`packaging/arch/`).
 
-> **Status:** scaffold (Phase 4). `ad_orender.c` is a first draft written
-> against the verified `liborender` C API and the mpv decoder interface; the
-> mpv-internal touch points (marked `MPV-API:` in the source) and the `patches/`
-> still need to be produced and validated against a pinned mpv build.
+> **Status:** Phase 4, pinned to mpv **v0.41.0**. The decoder is written
+> against the real mpv 0.41 decoder framework (`mp_filter`/`mp_decoder_fns`)
+> and the verified `liborender` C API, and lives on the `orender` branch of the
+> mpv fork (`mgth/mpv`). Validated: `meson setup -Dorender=enabled` detects
+> liborender and both `ad_orender.c` and `f_decoder_wrapper.c` **compile**
+> (object-level). Not yet validated: a full link + actual Atmos playback (needs
+> liborender + the bridge installed) and the seek/PTS behaviour.
 
 ## Layout
 
 ```
-src/ad_orender.c        # the decoder (copied into audio/decode/ at build time)
+src/ad_orender.c        # readable copy of the decoder (patch 0001 adds it to mpv)
 patches/                # generated diffs vs. pinned mpv (see patches/README.md)
-scripts/apply-patches.sh        # clone pinned mpv + copy source + apply patches
+scripts/apply-patches.sh        # clone pinned mpv + apply patches
 scripts/regenerate-patches.sh   # rebuild patches/ from the mpv fork's branch
 meson-options.txt       # canonical `orender` meson feature option
 packaging/PKGBUILD      # Arch package (provides/conflicts mpv)
@@ -32,9 +35,12 @@ packaging/PKGBUILD      # Arch package (provides/conflicts mpv)
 1. mpv demuxes raw TrueHD access units from the container.
 2. `ad_orender` feeds them to `liborender` (`orender_process`), which loads the
    TrueHD decoder bridge plugin, decodes to PCM + object metadata, and VBAP-
-   renders to N-channel interleaved float.
-3. The first packet resolves Atmos-vs-plain (`orender_is_spatial`): non-Atmos
-   streams return an error so mpv falls back — run with `--ad=orender,lavc`.
+   renders to N-channel interleaved float (`AF_FORMAT_FLOAT` — so mpv's normal
+   resampler / audio filter chain still applies, unlike spdif passthrough).
+3. It's opt-in: the decoder is only selected for TrueHD when `orender` is in the
+   `--ad` list, so default TrueHD playback is untouched. The first packet
+   resolves Atmos-vs-plain (`orender_is_spatial`); automatic fallback to
+   `ad_lavc` for non-Atmos is Phase 5.
 4. The output channel map comes from `orender_channel_layout` (per-speaker
    labels → `mp_chmap`).
 
@@ -47,25 +53,26 @@ packaging/PKGBUILD      # Arch package (provides/conflicts mpv)
 ## Build (dev)
 
 ```sh
-# 1. produce patches from your mpv fork's `orender` branch (once it exists):
-scripts/regenerate-patches.sh /path/to/mpv-fork
+# 1. assemble a patched mpv tree at build/mpv-v0.41.0 (clones the pinned tag):
+scripts/apply-patches.sh v0.41.0
 
-# 2. assemble a patched mpv tree at build/mpv-<tag>:
-scripts/apply-patches.sh v0.40.0
-
-# 3. build it:
-cd build/mpv-v0.40.0
+# 2. build it (needs liborender + the bridge installed):
+cd build/mpv-v0.41.0
 meson setup _b -Dorender=enabled && meson compile -C _b
+
+# (to refresh patches/ after editing the fork's `orender` branch:)
+scripts/regenerate-patches.sh /path/to/mpv-fork v0.41.0
 ```
 
 ## Play
 
 ```sh
-mpv --ad=orender,lavc film.atmos.mkv
+mpv --ad=orender film.atmos.mkv          # opt-in; default playback is untouched
 ```
 
 Phase 4 uses compile-time defaults (7.1.4 layout, packaged bridge path). The
-`--ad-orender-*` options (config path, OSC) land in Phase 5 — see the spec §6.
+`--ad-orender-*` options (config path, OSC) and automatic non-Atmos fallback to
+`ad_lavc` land in Phase 5 — see the spec §6.
 
 ## mpv fork workflow
 

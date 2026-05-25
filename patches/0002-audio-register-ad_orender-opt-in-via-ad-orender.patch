@@ -1,0 +1,96 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Mathieu GRENET <mathieu@mgth.fr>
+Date: Mon, 25 May 2026 12:15:50 +0200
+Subject: [PATCH 2/3] audio: register ad_orender, opt-in via --ad=orender
+
+Select ad_orender for TrueHD when the user puts 'orender' in --ad, the
+same opt-in style as ad_spdif. Gated on the explicit decoder name so
+default TrueHD playback is unaffected. Guarded by HAVE_ORENDER.
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
+---
+ filters/f_decoder_wrapper.c | 42 +++++++++++++++++++++++++++++++++++++
+ filters/f_decoder_wrapper.h |  3 +++
+ 2 files changed, 45 insertions(+)
+
+diff --git a/filters/f_decoder_wrapper.c b/filters/f_decoder_wrapper.c
+index 5e2e8d7..9073f4c 100644
+--- a/filters/f_decoder_wrapper.c
++++ b/filters/f_decoder_wrapper.c
+@@ -26,6 +26,7 @@
+ #include <libavutil/common.h>
+ #include <libavutil/rational.h>
+ 
++#include "config.h"
+ #include "options/options.h"
+ #include "common/msg.h"
+ #include "options/m_config.h"
+@@ -395,6 +396,26 @@ struct mp_decoder_list *audio_decoder_list(void)
+     return list;
+ }
+ 
++#if HAVE_ORENDER
++// True if `tok` appears as a whole entry in a "," separated decoder list.
++static bool decoder_list_has(const char *list, const char *tok)
++{
++    if (!list)
++        return false;
++    size_t tlen = strlen(tok);
++    for (const char *p = list; *p;) {
++        const char *e = strchr(p, ',');
++        size_t len = e ? (size_t)(e - p) : strlen(p);
++        if (len == tlen && strncmp(p, tok, tlen) == 0)
++            return true;
++        if (!e)
++            break;
++        p = e + 1;
++    }
++    return false;
++}
++#endif
++
+ static bool reinit_decoder(struct priv *p)
+ {
+     if (p->decoder)
+@@ -432,6 +453,27 @@ static bool reinit_decoder(struct priv *p)
+                 talloc_free(spdif);
+             }
+         }
++
++#if HAVE_ORENDER
++        // Opt-in Atmos object rendering for TrueHD via `--ad=orender`. Unlike
++        // ad_spdif this outputs normal float PCM (AF_FORMAT_FLOAT), so the
++        // native resampler / audio filter chain still applies. Gated on the
++        // explicit decoder name so default TrueHD playback is unaffected.
++        if (driver == &ad_lavc && p->codec->codec &&
++            strcmp(p->codec->codec, "truehd") == 0 &&
++            decoder_list_has(user_list, "orender"))
++        {
++            struct mp_decoder_list *ol =
++                talloc_zero(NULL, struct mp_decoder_list);
++            ad_orender.add_decoders(ol);
++            if (ol->num_entries) {
++                driver = &ad_orender;
++                list = ol;
++            } else {
++                talloc_free(ol);
++            }
++        }
++#endif
+     }
+ 
+     if (!driver)
+diff --git a/filters/f_decoder_wrapper.h b/filters/f_decoder_wrapper.h
+index a352dc0..53f336d 100644
+--- a/filters/f_decoder_wrapper.h
++++ b/filters/f_decoder_wrapper.h
+@@ -106,6 +106,9 @@ struct mp_decoder_fns {
+ extern const struct mp_decoder_fns vd_lavc;
+ extern const struct mp_decoder_fns ad_lavc;
+ extern const struct mp_decoder_fns ad_spdif;
++#if HAVE_ORENDER
++extern const struct mp_decoder_fns ad_orender;
++#endif
+ 
+ // Convenience wrapper for lavc based decoders. Treat lavc_state as private;
+ // init to all-0 on init and resets.

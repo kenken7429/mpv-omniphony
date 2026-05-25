@@ -10,7 +10,7 @@
 # Adjust _mpvver to a real released tag and fill the sha256sums before release.
 
 pkgname=mpv-orender
-_mpvver=0.40.0           # pinned mpv release tag (without the leading 'v')
+_mpvver=0.41.0           # pinned mpv release tag (without the leading 'v')
 pkgver=$_mpvver
 pkgrel=1
 pkgdesc="mpv with the orender Atmos decoder (TrueHD/Atmos object rendering via liborender)"
@@ -28,7 +28,7 @@ _repo="$startdir/.."     # mpv-orender repo root (src/, patches/)
 
 prepare() {
     cd "$srcdir/mpv-$_mpvver"
-    cp "$_repo/src/ad_orender.c" audio/decode/ad_orender.c
+    # patch 0001 adds audio/decode/ad_orender.c; 0002/0003 wire it in.
     shopt -s nullglob
     local patches=("$_repo"/patches/*.patch)
     if [ ${#patches[@]} -eq 0 ]; then

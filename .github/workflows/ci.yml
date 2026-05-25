@@ -10,7 +10,7 @@ jobs:
   build-mpv:
     runs-on: ubuntu-latest
     env:
-      MPV_TAG: v0.40.0     # keep in sync with scripts/ and PKGBUILD
+      MPV_TAG: v0.41.0     # keep in sync with scripts/ and PKGBUILD
     steps:
       - uses: actions/checkout@v4
 
