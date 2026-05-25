@@ -22,7 +22,7 @@ makedepends=('meson' 'ninja' 'python')
 provides=("mpv=$_mpvver")
 conflicts=('mpv')
 source=("mpv-$_mpvver.tar.gz::https://github.com/mpv-player/mpv/archive/v$_mpvver.tar.gz")
-sha256sums=('SKIP')      # TODO: pin the mpv tarball checksum for a release
+sha256sums=('ee21092a5ee427353392360929dc64645c54479aefdb5babc5cfbb5fad626209')
 
 _repo="$startdir/.."     # mpv-orender repo root (src/, patches/)
 
