@@ -10,9 +10,11 @@
  * shuttles packets in and aframes out through the filter pin protocol.
  *
  * Phase 4: opt-in only (so plain TrueHD playback is untouched). The decoder
- * bridge and speaker layout come from the config YAML (render.bridge_path),
- * default /etc/orender/config.yaml. The `--ad-orender-*` options, the
- * is_spatial→ad_lavc fallback, and custom chmaps are Phase 5.
+ * bridge and speaker layout come from the shared omniphony config YAML
+ * (render.bridge_path) — the SAME config the orender CLI + studio use
+ * (~/.config/omniphony/config.yaml), resolved by liborender when the config
+ * path is NULL. The `--ad-orender-*` options, the is_spatial→ad_lavc fallback,
+ * and custom chmaps are Phase 5.
  */
 
 #include <stdbool.h>
@@ -32,11 +34,11 @@
 
 #include <orender.h>
 
-/* Phase 4 default config path (replaced by --ad-orender-config in Phase 5).
- * The config YAML is the source of truth for the decoder bridge
- * (render.bridge_path) and, optionally, the speaker layout (else liborender's
- * 7.1.4 preset). */
-#define ORENDER_DEFAULT_CONFIG_PATH "/etc/orender/config.yaml"
+/* NULL → liborender resolves the shared omniphony config
+ * (~/.config/omniphony/config.yaml), the same one the CLI + studio use. The
+ * config provides render.bridge_path and (optionally) the speaker layout.
+ * Phase 5 adds --ad-orender-config to override it. */
+#define ORENDER_DEFAULT_CONFIG_PATH NULL
 
 /* liborender channel labels — mirror bridge_api::RChannelLabel. cbindgen runs
  * with parse_deps=false, so orender.h does not emit this enum; keep in sync. */
@@ -265,8 +267,9 @@ static struct mp_decoder *create(struct mp_filter *parent,
 
     p->renderer = orender_create(&cfg);
     if (!p->renderer) {
-        MP_ERR(da, "orender_create failed (config=%s — check render.bridge_path)\n",
-               ORENDER_DEFAULT_CONFIG_PATH);
+        MP_ERR(da, "orender_create failed — set render.bridge_path in your "
+                   "omniphony config (~/.config/omniphony/config.yaml); see "
+                   "stderr for the liborender error\n");
         talloc_free(da);
         return NULL;
     }
