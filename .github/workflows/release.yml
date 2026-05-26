@@ -185,9 +185,13 @@ jobs:
           # — that's where orender.pc was installed in the previous step.
           # $GITHUB_WORKSPACE is the workspace path inside the container.
           cd "build/mpv-${MPV_TAG}"
-          # Lua scripting disabled on the Windows build: mpv expects lua54/5.2,
-          # Martchus ships lua51 — version mismatch breaks the lua.h discovery.
-          # Lua is optional and unrelated to the Atmos decoder we need.
+          # TODO(lua): re-enable Lua scripting on Windows before public release.
+          # Temporarily disabled to validate the rest of the cross-compile path:
+          # mpv expects lua54/5.2 (mpv/0.41 meson default), Martchus ships
+          # mingw-w64-lua51 — version mismatch breaks lua.h discovery. Fix by
+          # building a MinGW lua5.4 package (or sourcing one) and dropping
+          # `-Dlua=disabled`. Lua is unrelated to the Atmos decoder so the
+          # rest of the build is unaffected.
           meson setup _b \
             --cross-file="$GITHUB_WORKSPACE/sysroot/mingw-cross.ini" \
             -Dorender=enabled \
