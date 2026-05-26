@@ -6,7 +6,7 @@
 set -euo pipefail
 
 PREFIX="${PREFIX:-/usr/local}"
-VER=0.1.0
+VER=0.2.0
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
@@ -21,6 +21,7 @@ typedef struct OrenderConfig {
     const char *config_yaml_path;
     const char *speaker_layout_path;
     const char *bridge_path;
+    const char *codec;
     int osc_enabled;
     uint16_t osc_port_in;
     uint16_t osc_port_out;
