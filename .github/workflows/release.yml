@@ -259,7 +259,8 @@ jobs:
           meson setup _b \
             --cross-file="$GITHUB_WORKSPACE/sysroot/mingw-cross.ini" \
             -Dorender=enabled \
-            -Dlua=lua52
+            -Dlua=lua52 \
+            -Dasio=enabled
           meson compile -C _b
 
       - name: Package (zip)
