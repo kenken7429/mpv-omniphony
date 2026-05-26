@@ -152,11 +152,32 @@ jobs:
       - name: Apply patches onto mpv
         run: bash scripts/apply-patches.sh "$MPV_TAG"
 
+      - name: Write meson cross-file (x86_64-w64-mingw32)
+        run: |
+          mkdir -p sysroot
+          cat > sysroot/mingw-cross.ini <<'EOF'
+          [binaries]
+          c = 'x86_64-w64-mingw32-gcc'
+          cpp = 'x86_64-w64-mingw32-g++'
+          ar = 'x86_64-w64-mingw32-ar'
+          strip = 'x86_64-w64-mingw32-strip'
+          pkg-config = 'x86_64-w64-mingw32-pkg-config'
+          windres = 'x86_64-w64-mingw32-windres'
+
+          [host_machine]
+          system = 'windows'
+          cpu_family = 'x86_64'
+          cpu = 'x86_64'
+          endian = 'little'
+          EOF
+
       - name: Cross-compile mpv (MinGW)
         run: |
           export PKG_CONFIG_PATH="${{ github.workspace }}/sysroot/mingw64/lib/pkgconfig:/usr/x86_64-w64-mingw32/lib/pkgconfig"
           cd "build/mpv-${MPV_TAG}"
-          x86_64-w64-mingw32-meson setup _b -Dorender=enabled
+          meson setup _b \
+            --cross-file=${{ github.workspace }}/sysroot/mingw-cross.ini \
+            -Dorender=enabled
           meson compile -C _b
 
       - name: Package (zip)
