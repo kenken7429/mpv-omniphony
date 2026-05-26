@@ -32,13 +32,17 @@ jobs:
             libass-dev libplacebo-dev liblua5.2-dev libx11-dev
 
       - name: Download liborender Linux release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          mkdir -p sysroot/usr/lib sysroot/usr/include sysroot/usr/lib/pkgconfig
-          gh release download "$LIBORENDER_TAG" -R mgth/Omniphony \
-            --pattern "liborender-*-linux-x86_64.zip" -D /tmp/liborender
-          unzip -d /tmp/liborender /tmp/liborender/liborender-*-linux-x86_64.zip
+          # Anonymous direct download instead of `gh release download`: the API
+          # path was returning HTTP 403 "account suspended" — likely an
+          # aggressive cross-repo token rate-limit. The release asset URL is
+          # publicly served so curl works without authentication.
+          mkdir -p sysroot/usr/lib sysroot/usr/include sysroot/usr/lib/pkgconfig /tmp/liborender
+          ver="${LIBORENDER_TAG#liborender-v}"
+          curl -fsSL \
+            "https://github.com/mgth/Omniphony/releases/download/${LIBORENDER_TAG}/${LIBORENDER_TAG}-linux-x86_64.zip" \
+            -o /tmp/liborender.zip
+          unzip -d /tmp/liborender /tmp/liborender.zip
           cp /tmp/liborender/liborender.so sysroot/usr/lib/liborender.so.0
           ln -sf liborender.so.0 sysroot/usr/lib/liborender.so
           cp /tmp/liborender/orender.h sysroot/usr/include/orender.h
@@ -185,16 +189,15 @@ jobs:
           x86_64-w64-mingw32-pkg-config --modversion lua52
 
       - name: Download liborender Windows release + install into MinGW sysroot
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # gh isn't in Arch by default — use curl with the github API token
+          # Anonymous direct download — the GH API was returning a misleading
+          # HTTP 403 "account suspended" on cross-repo asset reads even with a
+          # valid GITHUB_TOKEN, while the public asset URL serves fine without
+          # auth (release is public).
           mkdir -p /tmp/liborender
-          curl -sL -H "Authorization: Bearer $GH_TOKEN" \
-            "https://api.github.com/repos/mgth/Omniphony/releases/tags/$LIBORENDER_TAG" \
-            > /tmp/release.json
-          url=$(grep -oE '"browser_download_url":\s*"[^"]+-windows-x86_64\.zip"' /tmp/release.json | head -1 | sed 's/.*: *"//;s/"$//')
-          curl -sL "$url" -o /tmp/liborender.zip
+          curl -fsSL \
+            "https://github.com/mgth/Omniphony/releases/download/${LIBORENDER_TAG}/${LIBORENDER_TAG}-windows-x86_64.zip" \
+            -o /tmp/liborender.zip
           unzip -d /tmp/liborender /tmp/liborender.zip
 
           # Install directly into the MinGW sysroot the Martchus wrapper looks at,
