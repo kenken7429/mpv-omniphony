@@ -19,7 +19,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             meson ninja-build pkg-config gcc \
-            libavcodec-dev libavformat-dev libavutil-dev libswscale-dev \
+            libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev libswscale-dev \
             libass-dev libplacebo-dev liblua5.2-dev libx11-dev
 
       # liborender is not in apt. For CI we install a *mock* that satisfies the
