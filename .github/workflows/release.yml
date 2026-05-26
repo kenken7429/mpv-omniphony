@@ -241,20 +241,49 @@ jobs:
           cp README.md staging/
           # Recursively follow DLL deps so transitive runtime libs (libstdc++,
           # libwinpthread, ffmpeg, etc.) are bundled. Skip Windows system DLLs.
-          collect() {
-            local exe="$1"
-            x86_64-w64-mingw32-objdump -p "$exe" 2>/dev/null \
-              | awk '/DLL Name:/ {print $3}' \
-              | while read dll; do
-                  case "$dll" in KERNEL32.*|USER32.*|GDI32.*|ADVAPI32.*|MSVCRT.*|SHELL32.*|ole32.*|OLEAUT32.*|WS2_32.*|IMM32.*|VERSION.*|WINMM.*|d3d*|dxgi*|opengl32.*|setupapi.*|RPCRT4.*|bcrypt.*|CRYPT32.*|comdlg32.*|netapi32.*|powrprof.*|psapi.*|userenv.*|wininet.*|wintrust.*|comctl32.*|iphlpapi.*|secur32.*|uxtheme.*|dwmapi.*|crypt32.*|ncrypt.*|dnsapi.*|mpr.*|mswsock.*|odbc32.*|odbccp32.*) continue ;; esac
-                  [ -f "staging/$dll" ] && continue
-                  if [ -f "$SYS/bin/$dll" ]; then
-                    cp "$SYS/bin/$dll" staging/
-                    collect "staging/$dll"
-                  fi
-                done
+          # Use a worklist (not a pipeline) so the recursion's state survives —
+          # the previous `awk | while` pipeline ran the while in a subshell, so
+          # transitive deps weren't always re-scanned correctly.
+          should_skip() {
+            case "$1" in
+              KERNEL32.*|USER32.*|GDI32.*|ADVAPI32.*|MSVCRT.*|SHELL32.*|ole32.*|OLEAUT32.*|WS2_32.*|IMM32.*|VERSION.*|WINMM.*|d3d*|dxgi*|opengl32.*|setupapi.*|RPCRT4.*|bcrypt.*|CRYPT32.*|comdlg32.*|netapi32.*|powrprof.*|psapi.*|userenv.*|wininet.*|wintrust.*|comctl32.*|iphlpapi.*|secur32.*|uxtheme.*|dwmapi.*|crypt32.*|ncrypt.*|dnsapi.*|mpr.*|mswsock.*|odbc32.*|odbccp32.*)
+                return 0 ;;
+            esac
+            return 1
           }
-          collect staging/mpv.exe
+          worklist=(staging/mpv.exe)
+          while [ ${#worklist[@]} -gt 0 ]; do
+            exe="${worklist[0]}"
+            worklist=("${worklist[@]:1}")
+            echo "scanning $exe"
+            for dll in $(x86_64-w64-mingw32-objdump -p "$exe" 2>/dev/null \
+                          | awk '/DLL Name:/ {print $3}'); do
+              should_skip "$dll" && continue
+              [ -f "staging/$dll" ] && continue
+              if [ -f "$SYS/bin/$dll" ]; then
+                cp "$SYS/bin/$dll" staging/
+                worklist+=("staging/$dll")
+                echo "  + $dll"
+              else
+                echo "  ! NOT FOUND: $dll"
+              fi
+            done
+          done
+          # Belt-and-suspenders: also force-copy the MinGW C/C++ runtime DLLs.
+          # libsrt and other C++ libs link dynamically against libstdc++ and
+          # libgcc_s; if Windows can't find them next to mpv.exe it may load a
+          # stale version from the user's PATH (MSYS2, Git for Windows, …) and
+          # fail on missing symbols (e.g. _ZSt21ios_base_library_initv).
+          for dll in libstdc++-6.dll libgcc_s_seh-1.dll libwinpthread-1.dll; do
+            if [ -f "$SYS/bin/$dll" ] && [ ! -f "staging/$dll" ]; then
+              cp "$SYS/bin/$dll" staging/
+              echo "  + $dll (forced)"
+            fi
+          done
+          # Use bash for the worklist syntax above.
+        shell: bash
+      - name: Package final zip
+        run: |
           ls -la staging/
           cd staging
           zip -r "../mpv-omniphony-${GITHUB_REF_NAME}-windows-x86_64.zip" .
