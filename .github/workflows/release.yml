@@ -109,7 +109,7 @@ jobs:
       - name: Install MinGW toolchain + mpv deps
         run: |
           pacman -S --noconfirm --needed \
-            base-devel git unzip \
+            base-devel git unzip zip \
             mingw-w64-gcc \
             mingw-w64-pkg-config \
             mingw-w64-meson \
