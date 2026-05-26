@@ -1,24 +1,14 @@
 # mpv-omniphony
 
-mpv with an **Atmos audio decoder** that renders TrueHD/Atmos objects through
+mpv with an **Spatial audio decoder** that renders objects through
 [`liborender`](https://github.com/mgth/Omniphony) (VBAP spatial rendering)
-instead of letting FFmpeg downmix. Plain (non-Atmos) TrueHD keeps playing via
+instead of letting FFmpeg downmix. Non spatial keeps playing via
 mpv's normal `ad_lavc` decoder.
 
 This repo holds **only** the mpv-side integration: the decoder source
 (`src/ad_orender.c`), the patches that wire it into the mpv build, packaging and
-CI. The renderer itself (`liborender.so` + the TrueHD decoder bridge) is built
+CI. The renderer itself (`liborender.so` + the decoder bridge) is built
 and packaged from the `Omniphony` repo (`packaging/arch/`).
-
-> **Status:** Phase 5, pinned to mpv **v0.41.0**. The decoder targets the real
-> mpv 0.41 decoder framework (`mp_filter`/`mp_decoder_fns`) and the verified
-> `liborender` C API, on the `orender` branch of the mpv fork (`mgth/mpv`).
-> Validated end-to-end: full `meson -Dorender=enabled` build, real Atmos
-> playback (12/11-ch float output, chmap from the config layout), config-driven
-> OSC reaching omniphony-studio, and the `--ad-orender-*` overrides (e.g.
-> `--ad-orender-osc-rx-port=N` binds the listener on N). Open: automatic
-> non-Atmos fallback to `ad_lavc` (currently the bed is VBAP-rendered instead),
-> custom chmaps for top-side speakers (9.1.6), and long-run seek/PTS drift.
 
 ## Layout
 
@@ -34,14 +24,14 @@ packaging/PKGBUILD      # Arch package (provides/conflicts mpv)
 
 ## How it fits together
 
-1. mpv demuxes raw TrueHD access units from the container.
+1. mpv demuxes raw access units from the container.
 2. `ad_orender` feeds them to `liborender` (`orender_process`), which loads the
-   TrueHD decoder bridge plugin, decodes to PCM + object metadata, and VBAP-
+   decoder bridge plugin, decodes to PCM + object metadata, and VBAP-
    renders to N-channel interleaved float (`AF_FORMAT_FLOAT` — so mpv's normal
    resampler / audio filter chain still applies, unlike spdif passthrough).
-3. It's opt-in: the decoder is only selected for TrueHD when `orender` is in the
-   `--ad` list, so default TrueHD playback is untouched. The first packet
-   resolves Atmos-vs-plain (`orender_is_spatial`); for non-Atmos TrueHD the
+3. It's opt-in: the decoder is only selected for spatial audio when `orender` is in the
+   `--ad` list, so default Spatial playback is untouched. The first packet
+   resolves Spatial-vs-plain (`orender_is_spatial`); for non-Spatiial the
    bed is still VBAP-rendered to the layout (automatic fallback to `ad_lavc`
    is a future refinement — use plain `--ad=` to bypass orender entirely).
 4. The output channel map comes from `orender_channel_layout` (per-speaker
@@ -50,7 +40,7 @@ packaging/PKGBUILD      # Arch package (provides/conflicts mpv)
 ## Requirements
 
 - `liborender >= 0.1` and the decoder bridge installed (the `liborender` +
-  `omniphony-truehd-bridge` packages).
+  `omniphony-spatial-bridge` packages).
 - The **shared omniphony config** at `~/.config/omniphony/config.yaml` (the same
   one the `orender` CLI and studio use) providing `render.bridge_path` (the
   decoder bridge) and optionally the speaker layout. ad_orender reads this
@@ -58,7 +48,7 @@ packaging/PKGBUILD      # Arch package (provides/conflicts mpv)
   is; otherwise create it with at least:
   ```yaml
   render:
-    bridge_path: /usr/lib/orender/truehd_bridge.so
+    bridge_path: /usr/lib/orender/*_bridge.so
   ```
 
 ## Build (dev)
@@ -78,7 +68,7 @@ scripts/regenerate-patches.sh /path/to/mpv-fork v0.41.0
 ## Play
 
 ```sh
-mpv --ad=orender film.atmos.mkv          # opt-in; default playback is untouched
+mpv --ad=orender film.sâtial.mkv          # opt-in; default playback is untouched
 ```
 
 With no options, everything (bridge path, speaker layout, OSC) comes from the
