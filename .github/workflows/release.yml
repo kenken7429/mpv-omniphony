@@ -117,41 +117,42 @@ jobs:
             mingw-w64-libplacebo \
             mingw-w64-libass
 
-      - name: Build & install Lua 5.4 (MinGW)
+      - name: Build & install Lua 5.2 (MinGW)
         run: |
-          # Martchus only ships mingw-w64-lua51 and mpv 0.41 wants lua54/lua52.
-          # Lua is tiny and self-contained — build from source against MinGW.
+          # mpv 0.41 accepts lua52|lua51|luajit only — not lua54.
+          # Martchus only ships mingw-w64-lua51, so build Lua 5.2 ourselves
+          # (tiny, self-contained, turnkey `mingw` Makefile target).
           SYS=/usr/x86_64-w64-mingw32
-          LUA_VER=5.4.7
+          LUA_VER=5.2.4
           curl -sLO "https://www.lua.org/ftp/lua-${LUA_VER}.tar.gz"
           tar xzf "lua-${LUA_VER}.tar.gz"
           cd "lua-${LUA_VER}"
-          # mingw target builds lua54.dll + import lib + tools
+          # mingw target builds lua52.dll + tools
           make PLAT=mingw \
             CC=x86_64-w64-mingw32-gcc \
             AR="x86_64-w64-mingw32-ar rcu" \
             RANLIB=x86_64-w64-mingw32-ranlib \
             mingw
-          install -Dm755 src/lua54.dll       "$SYS/bin/lua54.dll"
+          install -Dm755 src/lua52.dll       "$SYS/bin/lua52.dll"
           install -Dm644 src/liblua.a        "$SYS/lib/liblua.a"
-          # mpv links via -llua54 against lua54.dll (no separate import lib needed).
+          # mpv links via -llua52 against lua52.dll (no separate import lib needed).
           install -Dm644 src/lua.h           "$SYS/include/lua.h"
           install -Dm644 src/lualib.h        "$SYS/include/lualib.h"
           install -Dm644 src/lauxlib.h       "$SYS/include/lauxlib.h"
           install -Dm644 src/luaconf.h       "$SYS/include/luaconf.h"
           install -d "$SYS/lib/pkgconfig"
-          cat > "$SYS/lib/pkgconfig/lua54.pc" <<EOF
+          cat > "$SYS/lib/pkgconfig/lua52.pc" <<EOF
           prefix=$SYS
           libdir=\${prefix}/lib
           includedir=\${prefix}/include
 
           Name: Lua
-          Description: Lua 5.4 (MinGW cross build)
+          Description: Lua 5.2 (MinGW cross build)
           Version: ${LUA_VER}
-          Libs: -L\${libdir} -llua54
+          Libs: -L\${libdir} -llua52
           Cflags: -I\${includedir}
           EOF
-          x86_64-w64-mingw32-pkg-config --modversion lua54
+          x86_64-w64-mingw32-pkg-config --modversion lua52
 
       - name: Download liborender Windows release + install into MinGW sysroot
         env:
@@ -220,12 +221,12 @@ jobs:
           # — that's where orender.pc was installed in the previous step.
           # $GITHUB_WORKSPACE is the workspace path inside the container.
           cd "build/mpv-${MPV_TAG}"
-          # Lua 5.4 is built from source in a previous step and installed into
-          # $SYS — mpv's `dependency('lua54')` finds it via pkg-config.
+          # Lua 5.2 is built from source in a previous step and installed into
+          # $SYS — mpv's `dependency('lua52')` finds it via pkg-config.
           meson setup _b \
             --cross-file="$GITHUB_WORKSPACE/sysroot/mingw-cross.ini" \
             -Dorender=enabled \
-            -Dlua=lua54
+            -Dlua=lua52
           meson compile -C _b
 
       - name: Package (zip)
