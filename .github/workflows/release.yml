@@ -279,6 +279,11 @@ jobs:
           SYS=/usr/x86_64-w64-mingw32
           mkdir -p staging
           cp "build/mpv-${MPV_TAG}/_b/mpv.exe" staging/
+          # mpv.com is the console-subsystem wrapper that exposes stdout/stderr;
+          # cmd.exe resolves `mpv` to mpv.com first (PATHEXT priority), so logs
+          # show up when launched from a console. Without it, mpv.exe runs
+          # detached from the console and prints nothing.
+          cp "build/mpv-${MPV_TAG}/_b/mpv.com" staging/
           cp "$SYS/bin/orender.dll" staging/
           cp "$SYS/include/orender.h" staging/
           cp README.md staging/
