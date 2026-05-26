@@ -138,7 +138,7 @@ jobs:
           # the .dll itself works as the import target with -lorender.
           ver="${LIBORENDER_TAG#liborender-v}"
           cat > sysroot/mingw64/lib/pkgconfig/orender.pc <<EOF
-          prefix=/sysroot/mingw64
+          prefix=$GITHUB_WORKSPACE/sysroot/mingw64
           libdir=\${prefix}/lib
           includedir=\${prefix}/include
 
@@ -173,10 +173,12 @@ jobs:
 
       - name: Cross-compile mpv (MinGW)
         run: |
-          export PKG_CONFIG_PATH="${{ github.workspace }}/sysroot/mingw64/lib/pkgconfig:/usr/x86_64-w64-mingw32/lib/pkgconfig"
+          # In a container job, $GITHUB_WORKSPACE is the workspace path inside
+          # the container; ${{ github.workspace }} would be the runner-host path.
+          export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/sysroot/mingw64/lib/pkgconfig:/usr/x86_64-w64-mingw32/lib/pkgconfig"
           cd "build/mpv-${MPV_TAG}"
           meson setup _b \
-            --cross-file=${{ github.workspace }}/sysroot/mingw-cross.ini \
+            --cross-file="$GITHUB_WORKSPACE/sysroot/mingw-cross.ini" \
             -Dorender=enabled
           meson compile -C _b
 
