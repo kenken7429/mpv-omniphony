@@ -118,27 +118,32 @@ jobs:
             mingw-w64-libass \
             mingw-w64-lua51
 
-      - name: Download liborender Windows release
+      - name: Download liborender Windows release + install into MinGW sysroot
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # gh isn't in Arch by default — use curl with the github API token
-          mkdir -p /tmp/liborender sysroot/mingw64/lib sysroot/mingw64/include \
-                   sysroot/mingw64/lib/pkgconfig
+          mkdir -p /tmp/liborender
           curl -sL -H "Authorization: Bearer $GH_TOKEN" \
             "https://api.github.com/repos/mgth/Omniphony/releases/tags/$LIBORENDER_TAG" \
             > /tmp/release.json
           url=$(grep -oE '"browser_download_url":\s*"[^"]+-windows-x86_64\.zip"' /tmp/release.json | head -1 | sed 's/.*: *"//;s/"$//')
           curl -sL "$url" -o /tmp/liborender.zip
           unzip -d /tmp/liborender /tmp/liborender.zip
-          cp /tmp/liborender/orender.dll sysroot/mingw64/lib/
-          cp /tmp/liborender/orender.h   sysroot/mingw64/include/
-          # On Windows we link against the .dll's import library — but cdylib
-          # produces orender.dll.lib via rustc, not shipped here. For MinGW
-          # the .dll itself works as the import target with -lorender.
+
+          # Install directly into the MinGW sysroot the Martchus wrapper looks at,
+          # so `x86_64-w64-mingw32-pkg-config` finds orender via its own
+          # PKG_CONFIG_LIBDIR (which overrides any PKG_CONFIG_PATH we'd set).
+          SYS=/usr/x86_64-w64-mingw32
+          install -Dm755 /tmp/liborender/orender.dll "$SYS/bin/orender.dll"
+          install -Dm644 /tmp/liborender/orender.h   "$SYS/include/orender.h"
+          # MinGW links against the DLL directly with -lorender (no import lib
+          # needed for cdylibs that export everything).
+          install -Dm755 /tmp/liborender/orender.dll "$SYS/lib/orender.dll"
           ver="${LIBORENDER_TAG#liborender-v}"
-          cat > sysroot/mingw64/lib/pkgconfig/orender.pc <<EOF
-          prefix=$GITHUB_WORKSPACE/sysroot/mingw64
+          install -d "$SYS/lib/pkgconfig"
+          cat > "$SYS/lib/pkgconfig/orender.pc" <<EOF
+          prefix=$SYS
           libdir=\${prefix}/lib
           includedir=\${prefix}/include
 
@@ -148,6 +153,8 @@ jobs:
           Libs: -L\${libdir} -lorender
           Cflags: -I\${includedir}
           EOF
+          # Sanity check the wrapper picks it up
+          x86_64-w64-mingw32-pkg-config --modversion orender
 
       - name: Apply patches onto mpv
         run: bash scripts/apply-patches.sh "$MPV_TAG"
@@ -173,9 +180,10 @@ jobs:
 
       - name: Cross-compile mpv (MinGW)
         run: |
-          # In a container job, $GITHUB_WORKSPACE is the workspace path inside
-          # the container; ${{ github.workspace }} would be the runner-host path.
-          export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/sysroot/mingw64/lib/pkgconfig:/usr/x86_64-w64-mingw32/lib/pkgconfig"
+          # The cross-file uses x86_64-w64-mingw32-pkg-config (Martchus wrapper),
+          # which sets its own PKG_CONFIG_LIBDIR to /usr/x86_64-w64-mingw32/lib/pkgconfig
+          # — that's where orender.pc was installed in the previous step.
+          # $GITHUB_WORKSPACE is the workspace path inside the container.
           cd "build/mpv-${MPV_TAG}"
           meson setup _b \
             --cross-file="$GITHUB_WORKSPACE/sysroot/mingw-cross.ini" \
@@ -184,17 +192,29 @@ jobs:
 
       - name: Package (zip)
         run: |
+          SYS=/usr/x86_64-w64-mingw32
           mkdir -p staging
           cp "build/mpv-${MPV_TAG}/_b/mpv.exe" staging/
-          cp sysroot/mingw64/lib/orender.dll staging/
-          cp sysroot/mingw64/include/orender.h staging/
+          cp "$SYS/bin/orender.dll" staging/
+          cp "$SYS/include/orender.h" staging/
           cp README.md staging/
-          # Copy MinGW runtime DLLs mpv depends on
-          for dll in $(x86_64-w64-mingw32-objdump -p staging/mpv.exe | grep 'DLL Name' | awk '{print $3}'); do
-            for d in /usr/x86_64-w64-mingw32/bin /sysroot/mingw64/bin; do
-              [ -f "$d/$dll" ] && cp "$d/$dll" staging/ && break
-            done
-          done
+          # Recursively follow DLL deps so transitive runtime libs (libstdc++,
+          # libwinpthread, ffmpeg, etc.) are bundled. Skip Windows system DLLs.
+          collect() {
+            local exe="$1"
+            x86_64-w64-mingw32-objdump -p "$exe" 2>/dev/null \
+              | awk '/DLL Name:/ {print $3}' \
+              | while read dll; do
+                  case "$dll" in KERNEL32.*|USER32.*|GDI32.*|ADVAPI32.*|MSVCRT.*|SHELL32.*|ole32.*|OLEAUT32.*|WS2_32.*|IMM32.*|VERSION.*|WINMM.*|d3d*|dxgi*|opengl32.*|setupapi.*|RPCRT4.*|bcrypt.*|CRYPT32.*|comdlg32.*|netapi32.*|powrprof.*|psapi.*|userenv.*|wininet.*|wintrust.*|comctl32.*|iphlpapi.*|secur32.*|uxtheme.*|dwmapi.*|crypt32.*|ncrypt.*|dnsapi.*|mpr.*|mswsock.*|odbc32.*|odbccp32.*) continue ;; esac
+                  [ -f "staging/$dll" ] && continue
+                  if [ -f "$SYS/bin/$dll" ]; then
+                    cp "$SYS/bin/$dll" staging/
+                    collect "staging/$dll"
+                  fi
+                done
+          }
+          collect staging/mpv.exe
+          ls -la staging/
           cd staging
           zip -r "../mpv-omniphony-${GITHUB_REF_NAME}-windows-x86_64.zip" .
 
