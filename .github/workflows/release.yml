@@ -121,33 +121,44 @@ jobs:
             mingw-w64-libplacebo \
             mingw-w64-libass
 
-      - name: Override libsrt with the MSYS2 build
+      - name: Build & install libsrt from source (ABI-matched to our libstdc++)
         run: |
-          # Martchus's mingw-w64-srt-1.5.3-1.1 was built against a libstdc++
-          # that exports `_ZSt21ios_base_library_initv` (std::ios_base_library_init,
-          # a GCC 13+ helper), but their shipped mingw-w64-gcc-16.1.0 libstdc++-6.dll
-          # does NOT export it. mpv.exe loads fine on Linux because pacman pins the
-          # same versions everywhere, but the bundled Windows build crashes on
-          # launch with "_ZSt21ios_base_library_initv introuvable dans libsrt.dll".
-          #
-          # MSYS2's mingw64 srt-1.5.3 build of the same upstream version doesn't
-          # have that import — drop it in over the Martchus copy so the bundle
-          # works against the libstdc++ we ship.
+          # Both the Martchus and the MSYS2 prebuilt libsrt.dll import C++ stdlib
+          # symbols their respective libstdc++ exports but the other doesn't.
+          # Since the rest of the bundle (mpv.exe, libavcodec, libplacebo, …) is
+          # compiled by Martchus's mingw-w64-gcc 16.1, the only fix that doesn't
+          # break some other lib is to rebuild libsrt against the exact same
+          # libstdc++ we ship. libsrt is small and its CMake build is turnkey.
           SYS=/usr/x86_64-w64-mingw32
-          URL=https://repo.msys2.org/mingw/mingw64/mingw-w64-x86_64-srt-1.5.3-1-any.pkg.tar.zst
-          EXPECTED=0c2611572dd8f8b67393fcc597dd448f7e1b78e81cbef4647b2f48f53d650c36
-          cd /tmp
-          curl -sLO "$URL"
-          mkdir -p srt-msys2
-          tar --use-compress-program=unzstd -xf "$(basename $URL)" -C srt-msys2
-          actual=$(sha256sum srt-msys2/mingw64/bin/libsrt.dll | awk '{print $1}')
-          if [ "$actual" != "$EXPECTED" ]; then
-            echo "ERROR: MSYS2 libsrt.dll sha256 mismatch (got $actual, expected $EXPECTED)" >&2
-            exit 1
+          pacman -S --noconfirm --needed \
+            mingw-w64-cmake mingw-w64-openssl
+          SRT_VER=1.5.5
+          curl -sLO "https://github.com/Haivision/srt/archive/refs/tags/v${SRT_VER}.tar.gz"
+          tar xzf "v${SRT_VER}.tar.gz"
+          cd "srt-${SRT_VER}"
+          mkdir build && cd build
+          x86_64-w64-mingw32-cmake .. \
+            -DENABLE_APPS=OFF \
+            -DENABLE_BONDING=OFF \
+            -DENABLE_STATIC=OFF \
+            -DENABLE_SHARED=ON \
+            -DCMAKE_INSTALL_PREFIX="$SYS"
+          cmake --build . -j"$(nproc)"
+          cmake --install .
+          # CMake on MinGW installs the shared lib as srt.dll (no `lib` prefix
+          # for OUTPUT_NAME=srt). avformat looks for libsrt.dll — keep both
+          # names so the linker and the runtime both find it.
+          if [ -f "$SYS/bin/srt.dll" ] && [ ! -f "$SYS/bin/libsrt.dll" ]; then
+            cp "$SYS/bin/srt.dll" "$SYS/bin/libsrt.dll"
           fi
-          install -Dm755 srt-msys2/mingw64/bin/libsrt.dll "$SYS/bin/libsrt.dll"
-          echo "libsrt overridden with MSYS2 build:"
-          ls -la "$SYS/bin/libsrt.dll"
+          echo "libsrt rebuilt:"
+          ls -la "$SYS/bin/"*srt*.dll "$SYS/lib/"*srt* 2>/dev/null
+          # Sanity check: must not require the symbol that broke us last time.
+          missing=$(x86_64-w64-mingw32-objdump -p "$SYS/bin/libsrt.dll" \
+            | grep -cE "_ZNSi5seekgESt4fposIiE|_ZSt21ios_base_library_initv" || true)
+          # (0 = neither imported = good. >0 means an unexpected import slipped
+          # back; would crash on Windows the same way as before.)
+          test "$missing" -eq 0 || { echo "FAIL: libsrt still imports forbidden libstdc++ symbol(s)" >&2; exit 1; }
 
       - name: Build & install Lua 5.2 (MinGW)
         run: |
