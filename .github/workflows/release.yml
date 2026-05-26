@@ -134,8 +134,10 @@ jobs:
             RANLIB=x86_64-w64-mingw32-ranlib \
             mingw
           install -Dm755 src/lua52.dll       "$SYS/bin/lua52.dll"
-          install -Dm644 src/liblua.a        "$SYS/lib/liblua.a"
-          # mpv links via -llua52 against lua52.dll (no separate import lib needed).
+          # MinGW's `-llua52` searches for liblua52.{dll.a,a}. Lua's mingw
+          # target produces a generic `liblua.a` — rename it on install so
+          # the linker finds it.
+          install -Dm644 src/liblua.a        "$SYS/lib/liblua52.a"
           install -Dm644 src/lua.h           "$SYS/include/lua.h"
           install -Dm644 src/lualib.h        "$SYS/include/lualib.h"
           install -Dm644 src/lauxlib.h       "$SYS/include/lauxlib.h"
