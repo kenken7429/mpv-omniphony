@@ -1,4 +1,4 @@
-# mpv-orender
+# mpv-omniphony
 
 mpv with an **Atmos audio decoder** that renders TrueHD/Atmos objects through
 [`liborender`](https://github.com/mgth/Omniphony) (VBAP spatial rendering)

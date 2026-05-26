@@ -1,6 +1,6 @@
 # Maintainer: Mathieu Grenet <mathieu@mgth.fr>
 #
-# mpv-orender — mpv built with the ad_orender Atmos decoder (liborender).
+# mpv-omniphony — mpv built with the ad_orender Atmos decoder (liborender).
 # Replaces the stock mpv. Plain (non-Atmos) TrueHD still plays via ad_lavc.
 #
 # Lives in packaging/ (not the repo root) so makepkg's $srcdir/$pkgdir don't
@@ -9,22 +9,22 @@
 # NOTE: requires ../patches/ to be populated (see scripts/regenerate-patches.sh).
 # Adjust _mpvver to a real released tag and fill the sha256sums before release.
 
-pkgname=mpv-orender
+pkgname=mpv-omniphony
 _mpvver=0.41.0           # pinned mpv release tag (without the leading 'v')
 pkgver=$_mpvver
 pkgrel=1
 pkgdesc="mpv with the orender Atmos decoder (TrueHD/Atmos object rendering via liborender)"
 arch=('x86_64')
-url="https://github.com/mgth/mpv-orender"
+url="https://github.com/mgth/mpv-omniphony"
 license=('GPL-2.0-or-later')
-depends=('liborender>=0.1' 'ffmpeg' 'libass' 'libplacebo' 'lua' 'libx11' 'mesa')
+depends=('liborender>=0.2' 'ffmpeg' 'libass' 'libplacebo' 'lua' 'libx11' 'mesa')
 makedepends=('meson' 'ninja' 'python')
 provides=("mpv=$_mpvver")
 conflicts=('mpv')
 source=("mpv-$_mpvver.tar.gz::https://github.com/mpv-player/mpv/archive/v$_mpvver.tar.gz")
 sha256sums=('ee21092a5ee427353392360929dc64645c54479aefdb5babc5cfbb5fad626209')
 
-_repo="$startdir/.."     # mpv-orender repo root (src/, patches/)
+_repo="$startdir/.."     # mpv-omniphony repo root (src/, patches/)
 
 prepare() {
     cd "$srcdir/mpv-$_mpvver"
