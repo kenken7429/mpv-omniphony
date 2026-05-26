@@ -5,8 +5,8 @@ name: Release
 # bundles each with the matching liborender release artifacts, and creates a
 # draft GitHub release.
 #
-# truehd_bridge is NOT bundled — Dolby licensing requires the user to download
-# it separately (see README).
+# The decoder bridge is NOT bundled — it carries licensing constraints that
+# require the user to download it separately (see README).
 on:
   push:
     tags:
@@ -284,18 +284,19 @@ jobs:
           draft: true
           name: ${{ github.ref_name }}
           body: |
-            mpv-omniphony ${{ github.ref_name }} — mpv with the ad_orender Atmos decoder.
+            mpv-omniphony ${{ github.ref_name }} — mpv with the ad_orender
+            spatial audio decoder.
 
             **What's in each archive:** `mpv` (or `mpv.exe`), `liborender.so.0` /
             `orender.dll`, `orender.h`, plus the bundled MinGW runtime DLLs on
             Windows.
 
-            **NOT bundled:** `truehd_bridge.so` / `truehd_bridge.dll` — the
-            TrueHD/E-AC3 decoder bridge. Dolby licensing means users must
-            obtain it themselves from
+            **NOT bundled:** the decoder bridge plugin
+            (`omniphony_bridge.so` / `.dll`). Licensing constraints on the
+            underlying codec mean users must obtain it themselves from
             [harletty-bridge](https://github.com/harletty/harletty-bridge/releases),
             and point mpv at it with
-            `--ad-orender-bridge-path=/path/to/truehd_bridge.{so,dll}`.
+            `--ad-orender-bridge-path=/path/to/bridge.{so,dll}`.
 
             Built against liborender ${{ env.LIBORENDER_TAG }}.
           files: |

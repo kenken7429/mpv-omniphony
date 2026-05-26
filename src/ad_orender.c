@@ -1,15 +1,15 @@
 /*
- * ad_orender.c — mpv audio decoder that renders TrueHD/Atmos through liborender.
+ * ad_orender.c — mpv audio decoder that renders spatial audio through liborender.
  *
  * Companion to ad_lavc/ad_spdif: when the user opts in with `--ad=orender` on a
- * TrueHD stream, decode + VBAP-render the Atmos objects to N-channel float PCM
- * via liborender (orender_*), instead of letting FFmpeg downmix.
+ * supported stream, decode + VBAP-render the spatial objects to N-channel
+ * float PCM via liborender (orender_*), instead of letting FFmpeg downmix.
  *
  * Modeled on ad_spdif.c (a non-lavc mp_filter decoder). liborender does the
  * decode (via a runtime bridge plugin) and the spatial render; this file only
  * shuttles packets in and aframes out through the filter pin protocol.
  *
- * Phase 4: opt-in only (so plain TrueHD playback is untouched). The decoder
+ * Phase 4: opt-in only (so default playback is untouched). The decoder
  * bridge and speaker layout come from the shared omniphony config YAML
  * (render.bridge_path) — the SAME config the orender CLI + studio use
  * (~/.config/omniphony/config.yaml), resolved by liborender when the config
@@ -209,11 +209,11 @@ static void ad_orender_process(struct mp_filter *da)
         goto done;
     }
 
-    /* Resolve Atmos-vs-plain + the output chmap on the first decoded packet. */
+    /* Resolve spatial-vs-plain + the output chmap on the first decoded packet. */
     if (!p->checked_spatial) {
         p->checked_spatial = true;
         if (orender_is_spatial(p->renderer) != 1) {
-            MP_WARN(da, "no Atmos objects detected; rendering the bed only "
+            MP_WARN(da, "no spatial objects detected; rendering the bed only "
                         "(decode this track without --ad=orender for the "
                         "standard downmix)\n");
         }
@@ -308,7 +308,8 @@ static struct mp_decoder *create(struct mp_filter *parent,
         .speaker_layout_path = NULL,
         .bridge_path         = nz(opts->bridge_path),
         /* Tell the bridge which codec the raw access units carry: its raw
-         * transport has no data-type byte to tell TrueHD from E-AC3 apart. */
+         * transport has no data-type byte to distinguish the supported
+         * codecs from each other. */
         .codec               = codec->codec,
         .osc_enabled         = opts->osc ? 1 : 0,
         .osc_port_in         = (uint16_t)opts->osc_rx_port,
@@ -327,8 +328,8 @@ static struct mp_decoder *create(struct mp_filter *parent,
     }
 
     p->channels = orender_channel_count(p->renderer);
-    codec->codec_desc = is_eac3 ? "E-AC3/Atmos (orender)"
-                                : "TrueHD/Atmos (orender)";
+    codec->codec_desc = is_eac3 ? "eac3 (orender, spatial)"
+                                : "truehd (orender, spatial)";
 
     return &p->public;
 }
@@ -336,9 +337,9 @@ static struct mp_decoder *create(struct mp_filter *parent,
 static void add_decoders(struct mp_decoder_list *list)
 {
     mp_add_decoder(list, "truehd", "orender",
-                   "TrueHD/Atmos via liborender (VBAP object rendering)");
+                   "Spatial audio via liborender (VBAP object rendering)");
     mp_add_decoder(list, "eac3", "orender",
-                   "E-AC3/Atmos (JOC) via liborender (VBAP object rendering)");
+                   "Spatial audio via liborender (VBAP object rendering)");
 }
 
 const struct mp_decoder_fns ad_orender = {

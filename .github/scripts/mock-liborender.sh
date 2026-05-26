@@ -74,7 +74,7 @@ prefix=$PREFIX
 libdir=\${prefix}/lib
 includedir=\${prefix}/include
 Name: orender
-Description: Atmos spatial renderer library (CI mock)
+Description: Spatial audio renderer library (CI mock)
 Version: $VER
 Libs: -L\${libdir} -lorender
 Cflags: -I\${includedir}

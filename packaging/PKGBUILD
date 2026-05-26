@@ -1,7 +1,8 @@
 # Maintainer: Mathieu Grenet <mathieu@mgth.fr>
 #
-# mpv-omniphony — mpv built with the ad_orender Atmos decoder (liborender).
-# Replaces the stock mpv. Plain (non-Atmos) TrueHD still plays via ad_lavc.
+# mpv-omniphony — mpv built with the ad_orender spatial audio decoder
+# (liborender). Replaces the stock mpv. Non-spatial streams still play via
+# ad_lavc as usual.
 #
 # Lives in packaging/ (not the repo root) so makepkg's $srcdir/$pkgdir don't
 # collide with the repo's own src/ directory.
@@ -13,7 +14,7 @@ pkgname=mpv-omniphony
 _mpvver=0.41.0           # pinned mpv release tag (without the leading 'v')
 pkgver=$_mpvver
 pkgrel=1
-pkgdesc="mpv with the orender Atmos decoder (TrueHD/Atmos object rendering via liborender)"
+pkgdesc="mpv with the orender spatial audio decoder (object rendering via liborender)"
 arch=('x86_64')
 url="https://github.com/mgth/mpv-omniphony"
 license=('GPL-2.0-or-later')
