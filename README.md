@@ -5,6 +5,13 @@ mpv with an **Spatial audio decoder** that renders objects through
 instead of letting FFmpeg downmix. Non spatial keeps playing via
 mpv's normal `ad_lavc` decoder.
 
+![mpv-omniphony — mpv playing a spatial mix, supervised by Omniphony Studio](mpv-omniphony.png)
+
+*Left: mpv's stats overlay shows `ad_orender` picked up the stream and
+the renderer is feeding the platform's audio output. Right: Omniphony
+Studio attached over OSC, showing per-object positions in the room and
+live meters.*
+
 This repo holds **only** the mpv-side integration: the decoder source
 (`src/ad_orender.c`), the patches that wire it into the mpv build, packaging and
 CI. The renderer itself (`liborender.so` + the decoder bridge) is built
