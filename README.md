@@ -112,9 +112,7 @@ controls and metering enabled.
 
 Prebuilt bundles ship on the Omniphony repo's releases page:
 
-```
-https://github.com/mgth/Omniphony/releases/latest
-```
+[Omniphony Studio Latest Release](https://github.com/mgth/Omniphony/releases/latest)
 
 - **Linux** — `Omniphony.Studio_<ver>_amd64.deb`,
   `Omniphony.Studio_<ver>_amd64.AppImage`, or
