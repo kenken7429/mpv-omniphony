@@ -90,6 +90,45 @@ zero-config `--ad=orender` path is unchanged. **OSC + studio:** either set
 listens on 9000 (the rendezvous studio registers to) — studio connects on its
 own. Note the shared config means the standalone CLI would also enable OSC.
 
+## Supervision with Omniphony Studio
+
+[Omniphony Studio](https://github.com/mgth/Omniphony) is the 3D
+visualization / live-control UI for the renderer. It speaks OSC to whichever
+host runs `liborender` — the standalone `orender` CLI, or the embedded
+host inside this mpv build. Studio detects the embedded variant via the
+renderer's capabilities handshake and hides the panels that don't apply
+(audio-output device, adaptive resampler, latency target), keeping spatial
+controls and metering enabled.
+
+### Get Studio
+
+Prebuilt bundles ship on the Omniphony repo's releases page:
+
+```
+https://github.com/mgth/Omniphony/releases/latest
+```
+
+- **Linux** — `Omniphony.Studio_<ver>_amd64.deb`,
+  `Omniphony.Studio_<ver>_amd64.AppImage`, or
+  `Omniphony.Studio-<ver>-1.x86_64.rpm`.
+- **Windows** — `Omniphony.Studio_<ver>_x64-setup.exe` (NSIS) or
+  `Omniphony.Studio_<ver>_x64_en-US.msi`.
+
+The Linux .deb installs an `omniphony-studio` binary; the Windows
+installers add a Start menu entry.
+
+### Connect Studio to mpv
+
+1. Start mpv with OSC on (one of the two — they're equivalent):
+   - add `render.osc: true` to `~/.config/omniphony/config.yaml`, or
+   - launch with `mpv --ad=orender --ad-orender-osc film.mkv`.
+2. Launch Studio. It registers with the renderer on the rendezvous port
+   (default 9000) and starts receiving the live state.
+
+Studio also works against the standalone CLI the same way — the same shared
+config drives both. You can flip between embedded (mpv) and standalone
+sessions without re-configuring Studio.
+
 ## mpv fork workflow
 
 Develop the integration in a fork of `mpv-player/mpv`:
