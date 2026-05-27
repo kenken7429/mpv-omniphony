@@ -1,8 +1,8 @@
 # mpv-omniphony
 
-mpv with an **Spatial audio decoder** that renders objects through
+mpv with a **spatial audio decoder** that renders objects through
 [`liborender`](https://github.com/mgth/Omniphony) (VBAP spatial rendering)
-instead of letting FFmpeg downmix. Non spatial keeps playing via
+instead of letting FFmpeg downmix. Non-spatial audio keeps playing via
 mpv's normal `ad_lavc` decoder.
 
 ![mpv-omniphony — mpv playing a spatial mix, supervised by Omniphony Studio](mpv-omniphony.png)
@@ -36,18 +36,19 @@ packaging/PKGBUILD      # Arch package (provides/conflicts mpv)
    decoder bridge plugin, decodes to PCM + object metadata, and VBAP-
    renders to N-channel interleaved float (`AF_FORMAT_FLOAT` — so mpv's normal
    resampler / audio filter chain still applies, unlike spdif passthrough).
-3. It's opt-in: the decoder is only selected for spatial audio when `orender` is in the
-   `--ad` list, so default Spatial playback is untouched. The first packet
-   resolves Spatial-vs-plain (`orender_is_spatial`); for non-Spatiial the
-   bed is still VBAP-rendered to the layout (automatic fallback to `ad_lavc`
-   is a future refinement — use plain `--ad=` to bypass orender entirely).
+3. It's opt-in: the decoder is only selected when `orender` is in the
+   `--ad` list, so default playback is untouched. The first packet
+   resolves spatial-vs-plain (`orender_is_spatial`); for non-spatial streams
+   the bed is still VBAP-rendered to the layout (automatic fallback to
+   `ad_lavc` is a future refinement — use plain `--ad=` to bypass orender
+   entirely).
 4. The output channel map comes from `orender_channel_layout` (per-speaker
    labels → `mp_chmap`).
 
 ## Requirements
 
-- `liborender >= 0.1` and the decoder bridge installed (the `liborender` +
-  `omniphony-spatial-bridge` packages).
+- `liborender >= 0.2` and the decoder bridge installed (the `liborender` +
+  `omniphony-bridge` packages).
 - The **shared omniphony config** at `~/.config/omniphony/config.yaml` (the same
   one the `orender` CLI and studio use) providing `render.bridge_path` (the
   decoder bridge) and optionally the speaker layout. ad_orender reads this
