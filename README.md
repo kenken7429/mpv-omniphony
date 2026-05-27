@@ -68,7 +68,7 @@ scripts/regenerate-patches.sh /path/to/mpv-fork v0.41.0
 ## Play
 
 ```sh
-mpv --ad=orender film.sâtial.mkv          # opt-in; default playback is untouched
+mpv --ad=orender film.spatial.mkv          # opt-in; default playback is untouched
 ```
 
 With no options, everything (bridge path, speaker layout, OSC) comes from the
