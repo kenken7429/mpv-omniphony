@@ -21,12 +21,17 @@ and packaged from the `Omniphony` repo (`packaging/arch/`).
 
 ```
 src/ad_orender.c        # readable copy of the decoder (patch 0001 adds it to mpv)
-patches/                # generated diffs vs. pinned mpv (see patches/README.md)
-scripts/apply-patches.sh        # clone pinned mpv + apply patches
-scripts/regenerate-patches.sh   # rebuild patches/ from the mpv fork's branch
+patches/                # generated diffs vs. pinned mpv v0.41.0
+patches-master/         # generated diffs vs. upstream mpv master HEAD (live tracker)
+scripts/apply-patches.sh             # clone pinned mpv + apply patches/
+scripts/apply-patches-master.sh      # clone mpv master HEAD + apply patches-master/
+scripts/regenerate-patches.sh        # rebuild patches/ from the fork's `orender`
+scripts/regenerate-patches-master.sh # rebuild patches-master/ from `orender-master`
 meson-options.txt       # canonical `orender` meson feature option
-packaging/PKGBUILD      # Arch package (provides/conflicts mpv)
-.github/workflows/ci.yml
+packaging/PKGBUILD          # Arch package against v0.41.0 (provides/conflicts mpv)
+packaging/PKGBUILD-master   # Arch -git package tracking master HEAD
+.github/workflows/ci.yml             # weekly drift check on v0.41.0
+.github/workflows/build-master.yml   # daily smoke test on master HEAD
 ```
 
 ## How it fits together
@@ -135,12 +140,35 @@ Studio also works against the standalone CLI the same way — the same shared
 config drives both. You can flip between embedded (mpv) and standalone
 sessions without re-configuring Studio.
 
+### Live overlay (optional)
+
+Studio can also draw a small front-view diagram of the live audio objects
+**directly on top of the mpv video** (X = horizontal, Z = vertical, Y → colour:
+green = front, blue = centre, red = back; circle size = RMS level). It is
+opt-in — install the lua and tell mpv to expose its IPC socket once:
+
+```sh
+# 1. enable the overlay script (auto-loads from ~/.config/mpv/scripts/)
+mkdir -p ~/.config/mpv/scripts
+ln -s /usr/share/mpv-omniphony/scripts/omniphony-overlay.lua \
+      ~/.config/mpv/scripts/
+
+# 2. expose mpv's JSON IPC socket so Studio can push frames into it
+echo 'input-ipc-server=/tmp/omniphony-mpv.sock' >> ~/.config/mpv/mpv.conf
+```
+
+Then in Studio: open the Display panel, toggle **mpv overlay** on and enter
+`/tmp/omniphony-mpv.sock` in the *IPC socket* field. Studio reconnects
+automatically when mpv restarts.
+
 ## mpv fork workflow
 
 Develop the integration in a fork of `mpv-player/mpv`:
 
 - `master` mirrors upstream (never modified).
-- `orender` carries the integration commits.
+- `orender` carries the integration commits based on the pinned `v0.41.0` tag.
+- `orender-master` carries the same commits rebased onto `upstream/master` (feeds
+  `patches-master/`; rebase periodically when the daily CI flags drift).
 
 ```sh
 git remote add upstream https://github.com/mpv-player/mpv.git
@@ -149,3 +177,34 @@ git checkout master && git merge upstream/master
 git checkout orender && git rebase master       # resolve drift
 scripts/regenerate-patches.sh /path/to/mpv-fork # refresh patches/ here
 ```
+
+## Tracking mpv master
+
+A second build path targets **upstream mpv master HEAD** (no SHA pin, live
+tracker). Useful for catching breakage early and for power users who want the
+freshest mpv with the orender decoder. The pinned `v0.41.0` flow above is the
+stable default — the master flow may break on any upstream merge.
+
+```sh
+# Local build (clones mpv master + applies patches-master/):
+scripts/apply-patches-master.sh
+cd build/mpv-master-<short-sha>
+meson setup _b -Dorender=enabled && meson compile -C _b
+```
+
+When the daily CI (`build-master.yml`) goes red, it means an upstream merge
+collided with one of the 7 integration commits. Rebase `orender-master`:
+
+```sh
+cd /path/to/mpv-fork
+git checkout orender-master
+git fetch upstream
+git rebase upstream/master                      # resolve conflicts
+cd /path/to/mpv-omniphony
+scripts/regenerate-patches-master.sh /path/to/mpv-fork
+git add patches-master/ && git commit -m "patches-master: rebase onto upstream/master"
+```
+
+Packaging: `packaging/PKGBUILD-master` builds an `mpv-omniphony-git` package
+that clones mpv master at install time and applies `patches-master/`. It
+conflicts with both stock `mpv` and the stable `mpv-omniphony` — install one.
