@@ -20,9 +20,9 @@
 
 local OVERLAY_ID = 47
 local BASE_RADIUS_RATIO = 0.015  -- fraction of screen height
-local SCREEN_MARGIN_RATIO = 0.02 -- inset so circles aren't clipped at edges
 local HEADER_FONT_SIZE = 14
 local COLOR_STEP = 32
+local CINEMA_ASPECT = 2.35       -- pseudo-3D depth squeezes Y=+1 into this band
 
 -- Bezier-approximated unit circle of radius 100, scaled per object via
 -- \fscx/\fscy so libass keeps the path parse cached.
@@ -106,15 +106,19 @@ local function build_ass(payload)
     return nil, 0, 0, 0
   end
 
-  -- Full-screen front view:
-  --   X ∈ [-1, +1] mapped horizontally across the whole screen, centred.
-  --   Z = 0 sits at the bottom edge; Z = 1 at the top edge.
-  --   (Studio's spatial convention is Z ∈ [0, 1] for floor → ceiling.)
-  local margin = math.min(res_x, res_y) * SCREEN_MARGIN_RATIO
+  -- Pseudo-3D front view, anchored on (X=0, Z=0.5) = screen centre:
+  --   X ∈ [-1, +1], Z ∈ [0, +1], Y ∈ [-1, +1].
+  --   Y = -1 (rear / wrap-around) → spatial cube fills the whole screen.
+  --   Y = +1 (at the screen)      → spatial cube fits inside the 2.35
+  --                                  letterbox band.
+  --   Same depth ratio scales X, Z and the circle radius so the cube
+  --   stays square as it recedes.
   local cx = res_x / 2
-  local x_range = res_x / 2 - margin
-  local floor_y = res_y - margin
-  local z_range = res_y - 2 * margin
+  local cy = res_y / 2
+  -- Vertical fraction the 2.35 band takes on this display, clamped at
+  -- 1.0 for displays wider than 2.35:1 (band fills the height).
+  local band_h_frac = math.min(1.0, (res_x / res_y) / CINEMA_ASPECT)
+  local depth_span = 1.0 - band_h_frac
   local base_radius = math.max(8, res_y * BASE_RADIUS_RATIO)
 
   local out = {}
@@ -135,12 +139,18 @@ local function build_ass(payload)
     if not (x and y and z) then return end
     n_obj = n_obj + 1
 
-    local sx = cx + x * x_range
-    local sy = floor_y - z * z_range
-    local scale = dbfs_to_scale(rms, 0.5, 2.4)
-    -- Quantise scale to 5 % buckets so libass caches a small fixed set.
-    scale = math.floor(scale * 20 + 0.5) / 20
-    local pct = base_radius * scale
+    -- Depth factor s ∈ [band_h_frac, 1].  Quantise to 5 % buckets so
+    -- libass's drawing cache keeps a small bounded set of unique
+    -- (s, level) combinations.
+    local depth_t = clamp((y + 1) * 0.5, 0, 1)
+    local s = 1.0 - depth_t * depth_span
+    s = math.floor(s * 20 + 0.5) / 20
+    local sx = cx + x * (res_x / 2) * s
+    local sy = cy - (z - 0.5) * res_y * s
+
+    local level_scale = dbfs_to_scale(rms, 0.5, 2.4)
+    level_scale = math.floor(level_scale * 20 + 0.5) / 20
+    local pct = base_radius * level_scale * s
     local r, g, b = color_for_y(y)
     local col = ass_color(r, g, b)
 
