@@ -14,8 +14,9 @@
                   Y = +1 green, Y = 0 blue, Y = -1 red
     radius    ← RMS dBFS  (0.5x .. 2.4x of base)
 
-  Position/size/colour are quantised so libass's drawing cache has a small
-  bounded set of unique events to manage.
+  Colour is wire-quantised by Studio; everything else is rendered at the
+  native resolution of the incoming OSC frame so the overlay tracks the
+  3D view as closely as possible.
 ]]
 
 local OVERLAY_ID = 47
@@ -81,6 +82,11 @@ local function for_each_field(s, sep, cb)
   end
 end
 
+-- Forward declaration so the trail-section helpers (e.g. `build_y_axis_line`)
+-- can call the unquantised cube vertex projector that is defined further
+-- down in the file.
+local project_vertex
+
 -- ── trails ───────────────────────────────────────────────────────────────
 
 -- Mirror of Studio's TRAIL_MIN_POINT_INTERVAL_MS (70 ms) so the overlay
@@ -88,7 +94,11 @@ end
 local TRAIL_MIN_POINT_INTERVAL_S = 0.07
 local TRAIL_MAX_POINTS = 60
 
-local trail_cfg = { enabled = false, ttl_s = 7.0, mode = "line" }
+-- `teleport_sq` is the squared XYZ distance threshold (in normalised
+-- Omniphony units) above which a step is treated as a teleport and the
+-- connecting segment is skipped. Studio owns this value; the lua just
+-- mirrors it.
+local trail_cfg = { enabled = false, ttl_s = 7.0, mode = "line", teleport_sq = 0.25 }
 -- Diffuse-mode rendering parameters.
 --   DIFFUSE_SPACING_FACTOR : desired dot spacing as a fraction of the
 --     active circle's base radius; smaller = denser = smoother trail.
@@ -96,7 +106,7 @@ local trail_cfg = { enabled = false, ttl_s = 7.0, mode = "line" }
 --     a single very fast move flooding libass.
 --   DIFFUSE_TOTAL_CAP      : whole-trail cap, ditto.
 --   DIFFUSE_BLUR           : Gaussian blur (in ASS pixels) for the glow
---     effect; quantised constant so libass caches the bitmap once.
+--     effect; constant per session so libass caches the bitmap once.
 local DIFFUSE_SPACING_FACTOR = 0.65
 local DIFFUSE_MAX_SUBDIV = 16
 local DIFFUSE_TOTAL_CAP = 96
@@ -116,7 +126,20 @@ local function trail_append(id, x, y, z)
   end
   if now - t.last_t < TRAIL_MIN_POINT_INTERVAL_S then return end
   t.last_t = now
-  t.points[#t.points + 1] = { x, y, z, now }
+  -- Detect teleports: if the new point is far from the previous one in
+  -- normalised XYZ space, mark a break so the renderer skips the
+  -- connecting segment without throwing away the buffered history.
+  local brk = false
+  local last = t.points[#t.points]
+  if last then
+    local dx = x - last[1]
+    local dy = y - last[2]
+    local dz = z - last[3]
+    if dx * dx + dy * dy + dz * dz > trail_cfg.teleport_sq then
+      brk = true
+    end
+  end
+  t.points[#t.points + 1] = { x, y, z, now, brk }
   -- Prune by TTL + cap. Keep the tail because new points were appended.
   local cutoff = now - trail_cfg.ttl_s
   local first = 1
@@ -132,11 +155,10 @@ local function trail_append(id, x, y, z)
 end
 
 -- Project a trail point [x_norm, y_norm, z_norm] into screen pixels using
--- the same depth-quantised pseudo-3D formula as the active circles.
+-- the same pseudo-3D formula as the active circles.
 local function project_trail_point(p, cx, cy, res_x, res_y, depth_span)
   local depth_t = clamp((p[2] + 1) * 0.5, 0, 1)
   local s = 1.0 - depth_t * depth_span
-  s = math.floor(s * 20 + 0.5) / 20
   local sx = cx + p[1] * (res_x / 2) * s
   local sy = cy - (p[3] - 0.5) * res_y * s
   return sx, sy, s
@@ -149,10 +171,15 @@ local function build_trail_line(t, cx, cy, res_x, res_y, depth_span, color_hex)
   -- itself.
   local segs = {}
   for i = 1, #t.points - 1 do
-    local x1, y1 = project_trail_point(t.points[i],     cx, cy, res_x, res_y, depth_span)
-    local x2, y2 = project_trail_point(t.points[i + 1], cx, cy, res_x, res_y, depth_span)
-    segs[#segs + 1] = string.format("m %.1f %.1f l %.1f %.1f", x1, y1, x2, y2)
+    -- Skip the segment if the next point was flagged as a teleport: we
+    -- keep both endpoints in the buffer but don't bridge them.
+    if not t.points[i + 1][5] then
+      local x1, y1 = project_trail_point(t.points[i],     cx, cy, res_x, res_y, depth_span)
+      local x2, y2 = project_trail_point(t.points[i + 1], cx, cy, res_x, res_y, depth_span)
+      segs[#segs + 1] = string.format("m %.1f %.1f l %.1f %.1f", x1, y1, x2, y2)
+    end
   end
+  if #segs == 0 then return nil end
   local r, g, b = parse_hex_color(color_hex)
   return string.format(
     "{\\an7\\pos(0,0)\\bord1\\1a&HFF&\\3c%s\\3a&H70&\\p1}%s{\\p0}",
@@ -167,14 +194,11 @@ end
 -- continuous regardless of the buffer sample rate.
 local function emit_diffuse_dot(events, sx, sy, t_along, age_fade,
                                 base_radius, depth_scale, col)
-  -- Quantise size + alpha to 4 buckets each so the libass drawing cache
-  -- stays bounded (≤ 16 unique (radius, alpha) tuples per colour).
   local r_factor = 0.30 + 0.70 * t_along
-  r_factor = math.floor(r_factor * 4 + 0.5) / 4
   local dot_r = base_radius * r_factor * depth_scale
   local alpha = 1.0 - 0.70 * t_along * age_fade
-  local alpha_q = math.floor(alpha * 4 + 0.5) / 4
-  local alpha_hex = math.floor(alpha_q * 255 + 0.5)
+  local alpha_hex = math.floor(alpha * 255 + 0.5)
+  if alpha_hex < 0 then alpha_hex = 0 elseif alpha_hex > 255 then alpha_hex = 255 end
   events[#events + 1] = string.format(
     "{\\an7\\pos(%.1f,%.1f)\\bord0\\blur%d\\fscx%.1f\\fscy%.1f\\1c%s\\1a&H%02X&\\p1}%s{\\p0}",
     sx, sy, DIFFUSE_BLUR, dot_r, dot_r, col, alpha_hex, UNIT_CIRCLE
@@ -193,7 +217,7 @@ local function build_trail_diffuse(t, cx, cy, res_x, res_y, depth_span, color_he
   for i = 1, count do
     local p = t.points[i]
     local sx, sy, s = project_trail_point(p, cx, cy, res_x, res_y, depth_span)
-    pts[i] = { sx = sx, sy = sy, s = s, t = p[4] }
+    pts[i] = { sx = sx, sy = sy, s = s, t = p[4], brk = p[5] }
   end
 
   local target_spacing = math.max(2.0, base_radius * DIFFUSE_SPACING_FACTOR)
@@ -202,6 +226,9 @@ local function build_trail_diffuse(t, cx, cy, res_x, res_y, depth_span, color_he
 
   for i = 1, count - 1 do
     if total >= DIFFUSE_TOTAL_CAP then break end
+    -- Honour teleport breaks: don't interpolate dots between the previous
+    -- point and a teleported one.
+    if pts[i + 1].brk then goto continue end
     local p1, p2 = pts[i], pts[i + 1]
     local dx, dy = p2.sx - p1.sx, p2.sy - p1.sy
     local seg_len = math.sqrt(dx * dx + dy * dy)
@@ -223,6 +250,7 @@ local function build_trail_diffuse(t, cx, cy, res_x, res_y, depth_span, color_he
         total = total + 1
       end
     end
+    ::continue::
   end
 
   -- Always emit the newest point so the trail kisses the active circle.
@@ -245,13 +273,39 @@ end
 -- actually sits. Uses `\bord` on a degenerate 2-point path → libass
 -- strokes both sides of the line, giving a clean ~2·bord-pixel-wide bar.
 local Y_LINE_BORD = 3
+local Y_TICK_HALF = 5  -- half-length of the Y=0 perpendicular tick, px
 local function build_y_axis_line(x, z, cx, cy, res_x, res_y, depth_span, color_hex)
-  local x1, y1 = project_trail_point({ x, -1, z, 0 }, cx, cy, res_x, res_y, depth_span)
-  local x2, y2 = project_trail_point({ x,  1, z, 0 }, cx, cy, res_x, res_y, depth_span)
+  -- Reuse the cube vertex projection so a line at an extreme (X=±1,
+  -- Z∈{0,1}) lands exactly on the cube corners. project_trail_point has
+  -- the same math now that quantisation is gone — kept for clarity.
+  local x1, y1 = project_vertex(x, -1, z, cx, cy, res_x, res_y, depth_span)
+  local x2, y2 = project_vertex(x,  1, z, cx, cy, res_x, res_y, depth_span)
+  -- Anchor the tick to the pixel midpoint of the endpoints by
+  -- construction.
+  local xm = (x1 + x2) * 0.5
+  local ym = (y1 + y2) * 0.5
+  -- Perpendicular to the depth line in screen space, normalised. Falls
+  -- back to a horizontal tick when the line is degenerate (object at
+  -- screen centre).
+  local dx, dy = x2 - x1, y2 - y1
+  local len = math.sqrt(dx * dx + dy * dy)
+  local px, py
+  if len > 0.5 then
+    px, py = -dy / len, dx / len
+  else
+    px, py = 1, 0
+  end
+  local tx1 = xm - px * Y_TICK_HALF
+  local ty1 = ym - py * Y_TICK_HALF
+  local tx2 = xm + px * Y_TICK_HALF
+  local ty2 = ym + py * Y_TICK_HALF
   local r, g, b = parse_hex_color(color_hex)
   return string.format(
-    "{\\an7\\pos(0,0)\\bord%d\\blur1\\1a&HFF&\\3c%s\\3a&H80&\\p1}m %.1f %.1f l %.1f %.1f{\\p0}",
-    Y_LINE_BORD, ass_color(r, g, b), x1, y1, x2, y2
+    "{\\an7\\pos(0,0)\\bord%d\\blur1\\1a&HFF&\\3c%s\\3a&H80&\\p1}"
+    .. "m %.1f %.1f l %.1f %.1f m %.1f %.1f l %.1f %.1f{\\p0}",
+    Y_LINE_BORD, ass_color(r, g, b),
+    x1, y1, x2, y2,
+    tx1, ty1, tx2, ty2
   )
 end
 
@@ -270,11 +324,22 @@ mp.observe_property(
   "native",
   function(_, value)
     if type(value) ~= "string" or #value == 0 then return end
-    local en, ttl, mode = value:match("^(%d+)|(%d+)|(%w+)$")
+    -- Wire format: "<enabled>|<ttl_ms>|<mode>|<teleport_threshold>"; the
+    -- threshold is appended by newer Studios. Accept both shapes so we
+    -- can downgrade gracefully.
+    local en, ttl, mode, thr = value:match("^(%d+)|(%d+)|(%w+)|([%d%.]+)$")
+    if not en then
+      en, ttl, mode = value:match("^(%d+)|(%d+)|(%w+)$")
+      thr = nil
+    end
     if not en then return end
     trail_cfg.enabled = (en == "1")
     trail_cfg.ttl_s = (tonumber(ttl) or 7000) / 1000
     trail_cfg.mode = (mode == "diffuse") and "diffuse" or "line"
+    local thr_num = tonumber(thr)
+    if thr_num and thr_num > 0 then
+      trail_cfg.teleport_sq = thr_num * thr_num
+    end
     if not trail_cfg.enabled then trails = {} end
   end
 )
@@ -295,7 +360,7 @@ local CUBE_EDGES = {
   {-1,-1,1, -1, 1,1}, { 1,-1,1,  1, 1,1},
 }
 
-local function project_vertex(vx, vy, vz, cx, cy, res_x, res_y, depth_span)
+function project_vertex(vx, vy, vz, cx, cy, res_x, res_y, depth_span)
   local depth_t = clamp((vy + 1) * 0.5, 0, 1)
   local s = 1.0 - depth_t * depth_span
   -- Same depth ratio as the objects, no quantisation: the cube is static
@@ -367,20 +432,15 @@ local function build_ass(payload)
     if not (x and y and z) then return end
     n_obj = n_obj + 1
 
-    -- Depth factor s ∈ [band_h_frac, 1].  Quantise to 5 % buckets so
-    -- libass's drawing cache keeps a small bounded set of unique
-    -- (s, level) combinations.
+    -- Depth factor s ∈ [band_h_frac, 1].
     local depth_t = clamp((y + 1) * 0.5, 0, 1)
     local s = 1.0 - depth_t * depth_span
-    s = math.floor(s * 20 + 0.5) / 20
     local sx = cx + x * (res_x / 2) * s
     local sy = cy - (z - 0.5) * res_y * s
 
     local level_scale = dbfs_to_scale(rms, 0.5, 2.4)
-    level_scale = math.floor(level_scale * 20 + 0.5) / 20
     local pct = base_radius * level_scale * s
-    -- Same palette/tag logic as Studio (mirrored Rust-side); colour comes
-    -- ready-quantised from the wire so libass's cache stays bounded.
+    -- Same palette/tag logic as Studio (mirrored Rust-side).
     local r, g, b = parse_hex_color(color_hex)
     local col = ass_color(r, g, b)
 

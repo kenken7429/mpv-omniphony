@@ -142,10 +142,41 @@ sessions without re-configuring Studio.
 
 ### Live overlay (optional)
 
-Studio can also draw a small front-view diagram of the live audio objects
-**directly on top of the mpv video** (X = horizontal, Z = vertical, Y → colour:
-green = front, blue = centre, red = back; circle size = RMS level). It is
-opt-in — install the lua and tell mpv to expose its IPC socket once:
+Studio can also draw a pseudo-3D front-view diagram of the live audio
+objects **directly on top of the mpv video**, mirroring the 3D view's
+mapping so the two stay readable side-by-side.
+
+What gets drawn:
+
+- **Active objects**: filled circles at `(X, Z)`; radius from RMS level,
+  per-object colour from Studio's palette (FNV-1a hash of the object id,
+  with the speaker-tag override applied — same logic as the 3D view).
+- **Wireframe cube**: the spatial unit cube projected with the same
+  pseudo-3D depth ratio as the objects. The `Y = -1` face is omitted
+  because it traces the screen border anyway; the four diagonals carry
+  the depth structure.
+- **Per-object depth axis**: a coloured line at the object's
+  `(X, Z)` spanning the full `Y ∈ [-1, +1]` range, with a perpendicular
+  tick at `Y = 0` (screen midpoint of the line). Marks where on the
+  front/back axis the object actually sits.
+- **Trails**: line or diffuse mode, mirroring Studio's *Trails* panel.
+  Diffuse mode uses screen-distance-adaptive subdivision so fast-moving
+  objects keep a near-continuous trail regardless of the OSC sample rate.
+- **Teleport break**: a configurable threshold in Studio (*Trails →
+  Teleport threshold*, default `0.5` in normalised XYZ units) drops the
+  segment connecting two trail points further apart than that threshold,
+  in both the 3D view and the overlay. Useful when objects jump rather
+  than glide.
+- **Object count**: a small header in the top-right corner.
+
+Pseudo-3D depth mapping: `Y = -1` (listener's rear / wrap-around) fills
+the whole screen; `Y = +1` (screen plane) fits inside the 2.35:1 cinema
+band. `(X = 0, Z = 0.5)` stays at screen centre across the whole `Y`
+range so the projection looks coherent in fullscreen, letterboxed and
+windowed mpv.
+
+It's opt-in — install the lua and tell mpv to expose its IPC socket
+once:
 
 ```sh
 # 1. enable the overlay script (auto-loads from ~/.config/mpv/scripts/)
@@ -157,9 +188,15 @@ ln -s /usr/share/mpv-omniphony/scripts/omniphony-overlay.lua \
 echo 'input-ipc-server=/tmp/omniphony-mpv.sock' >> ~/.config/mpv/mpv.conf
 ```
 
-Then in Studio: open the Display panel, toggle **mpv overlay** on and enter
-`/tmp/omniphony-mpv.sock` in the *IPC socket* field. Studio reconnects
-automatically when mpv restarts.
+Then in Studio: open the *Display* panel, toggle **mpv overlay** on and
+enter `/tmp/omniphony-mpv.sock` in the *IPC socket* field. The toggle
+and socket path are persisted to Studio's config dir; the overlay
+reconnects automatically when mpv restarts.
+
+The overlay's pacing follows the renderer's metering rate (no upper
+cap). Studio drains mpv's IPC responses in a dedicated reader thread,
+so a long playback session can't fill the kernel reply buffer and
+freeze mpv's main thread.
 
 ## mpv fork workflow
 
