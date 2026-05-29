@@ -198,16 +198,25 @@ $dst = "$env:APPDATA\mpv\scripts\omniphony-overlay.lua"
 mkdir -Force (Split-Path $dst)
 Copy-Item .\omniphony-overlay.lua $dst
 
-# 2. expose mpv's JSON IPC pipe
-Add-Content "$env:APPDATA\mpv\mpv.conf" 'input-ipc-server=\\.\pipe\omniphony-mpv'
+# 2. expose mpv's JSON IPC pipe. mpv automatically prepends the
+#    `\\.\pipe\` namespace, so pass just the bare name — passing the
+#    full path through mpv.conf is ambiguous (backslash escaping vs
+#    UNC interpretation) and easy to get wrong.
+Add-Content "$env:APPDATA\mpv\mpv.conf" 'input-ipc-server=omniphony-mpv'
 ```
 
 Then in Studio: open the *Display* panel, toggle **mpv overlay** on and
-enter the IPC endpoint mpv was launched with — `/tmp/omniphony-mpv.sock`
-on Linux / macOS, `\\.\pipe\omniphony-mpv` on Windows. The literal is
-used as-is (same convention as the audio input pipe — no
-normalisation). The toggle and endpoint are persisted to Studio's
-config dir; the overlay reconnects automatically when mpv restarts.
+enter the **full** IPC endpoint Studio should connect to — symmetric
+Unix path `/tmp/omniphony-mpv.sock` on Linux / macOS, fully qualified
+Win32 pipe path `\\.\pipe\omniphony-mpv` on Windows (which is what
+mpv created from the bare name above). Studio uses the literal as-is
+(same convention as the audio input pipe — no normalisation). The
+toggle and endpoint are persisted to Studio's config dir; the overlay
+reconnects automatically when mpv restarts.
+
+Sanity check on Windows — after starting mpv, `dir \\.\pipe\` in a
+cmd.exe window should list `omniphony-mpv`. If it doesn't, mpv didn't
+pick up the option (wrong mpv.conf path, typo, etc).
 
 The overlay's pacing follows the renderer's metering rate (no upper
 cap). Studio drains mpv's IPC responses in a dedicated reader thread,
