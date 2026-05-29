@@ -175,8 +175,10 @@ band. `(X = 0, Z = 0.5)` stays at screen centre across the whole `Y`
 range so the projection looks coherent in fullscreen, letterboxed and
 windowed mpv.
 
-It's opt-in — install the lua and tell mpv to expose its IPC socket
-once:
+It's opt-in — install the lua and tell mpv to expose its IPC endpoint
+once.
+
+**Linux / macOS** (Unix domain socket):
 
 ```sh
 # 1. enable the overlay script (auto-loads from ~/.config/mpv/scripts/)
@@ -188,10 +190,24 @@ ln -s /usr/share/mpv-omniphony/scripts/omniphony-overlay.lua \
 echo 'input-ipc-server=/tmp/omniphony-mpv.sock' >> ~/.config/mpv/mpv.conf
 ```
 
+**Windows** (named pipe — mpv uses Win32 pipes, not Unix sockets):
+
+```powershell
+# 1. enable the overlay script (auto-loads from %APPDATA%\mpv\scripts\)
+$dst = "$env:APPDATA\mpv\scripts\omniphony-overlay.lua"
+mkdir -Force (Split-Path $dst)
+Copy-Item .\omniphony-overlay.lua $dst
+
+# 2. expose mpv's JSON IPC pipe
+Add-Content "$env:APPDATA\mpv\mpv.conf" 'input-ipc-server=\\.\pipe\omniphony-mpv'
+```
+
 Then in Studio: open the *Display* panel, toggle **mpv overlay** on and
-enter `/tmp/omniphony-mpv.sock` in the *IPC socket* field. The toggle
-and socket path are persisted to Studio's config dir; the overlay
-reconnects automatically when mpv restarts.
+enter the IPC endpoint mpv was launched with — `/tmp/omniphony-mpv.sock`
+on Linux / macOS, `\\.\pipe\omniphony-mpv` on Windows. The literal is
+used as-is (same convention as the audio input pipe — no
+normalisation). The toggle and endpoint are persisted to Studio's
+config dir; the overlay reconnects automatically when mpv restarts.
 
 The overlay's pacing follows the renderer's metering rate (no upper
 cap). Studio drains mpv's IPC responses in a dedicated reader thread,
