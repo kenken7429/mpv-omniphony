@@ -44,7 +44,7 @@ new file mode 100644
 index 0000000000..e0002cfb38
 --- /dev/null
 +++ b/audio/decode/ad_orender.c
-@@ -0,0 +1,348 @@
+@@ -0,0 +1,358 @@
 +/*
 + * ad_orender.c — mpv audio decoder that renders spatial audio through liborender.
 + *
@@ -367,9 +367,19 @@ index 0000000000..e0002cfb38
 +
 +    p->renderer = orender_create(&cfg);
 +    if (!p->renderer) {
++        /* liborender resolves the config per-OS (see
++         * renderer/src/config.rs::default_config_path): %APPDATA% on
++         * Windows, $XDG_CONFIG_HOME (or ~/.config) elsewhere. Match its
++         * convention in the user-facing hint. */
++#ifdef _WIN32
++        MP_ERR(da, "orender_create failed — set render.bridge_path in your "
++                   "omniphony config (%%APPDATA%%\\omniphony\\config.yaml); "
++                   "see stderr for the liborender error\n");
++#else
 +        MP_ERR(da, "orender_create failed — set render.bridge_path in your "
 +                   "omniphony config (~/.config/omniphony/config.yaml); see "
 +                   "stderr for the liborender error\n");
++#endif
 +        talloc_free(da);
 +        return NULL;
 +    }
