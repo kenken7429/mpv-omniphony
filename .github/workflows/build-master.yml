@@ -1,0 +1,59 @@
+name: build-master
+
+# Track upstream mpv master HEAD (no tag pin). Daily smoke test catches drift
+# between mpv's evolving master and patches-master/ early — when this fails,
+# rebase orender-master in the fork and run regenerate-patches-master.sh.
+
+on:
+  push:
+    paths:
+      - 'patches-master/**'
+      - 'scripts/apply-patches-master.sh'
+      - 'scripts/regenerate-patches-master.sh'
+      - '.github/workflows/build-master.yml'
+  pull_request:
+    paths:
+      - 'patches-master/**'
+      - 'scripts/apply-patches-master.sh'
+      - '.github/workflows/build-master.yml'
+  schedule:
+    - cron: '0 6 * * *'   # daily: master moves fast, weekly is too slow
+  workflow_dispatch:
+
+jobs:
+  build-mpv-master:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            meson ninja-build pkg-config gcc \
+            libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev libswscale-dev \
+            libass-dev libplacebo-dev liblua5.2-dev libx11-dev
+
+      - name: Build & install a mock liborender
+        run: bash .github/scripts/mock-liborender.sh
+
+      - name: Apply patches onto mpv master HEAD
+        run: bash scripts/apply-patches-master.sh
+
+      - name: Locate snapshot dir
+        id: snap
+        run: |
+          src="$(ls -d build/mpv-master-* | grep -v '^build/mpv-master-clone$' | head -n1)"
+          echo "src=$src" >> "$GITHUB_OUTPUT"
+          echo ">> built against $src"
+
+      - name: Configure & build
+        run: |
+          cd "${{ steps.snap.outputs.src }}"
+          meson setup _b -Dorender=enabled
+          meson compile -C _b
+
+      - name: Smoke test
+        run: |
+          cd "${{ steps.snap.outputs.src }}"
+          ./_b/mpv --version

@@ -1,0 +1,62 @@
+# Maintainer: Mathieu Grenet <mathieu@mgth.fr>
+#
+# mpv-omniphony-git — mpv master HEAD built with the ad_orender spatial audio
+# decoder (liborender). Live tracker of upstream mpv master; not for stable
+# distribution. Coexists conflict-wise with `mpv-omniphony` (the pinned
+# v0.41.0 build) — install one or the other.
+#
+# Requires ../patches-master/ to be populated by
+# scripts/regenerate-patches-master.sh from the fork's `orender-master` branch.
+
+pkgname=mpv-omniphony-git
+_mpvver=master
+pkgver=r0.0000000           # overwritten by pkgver() at build time
+pkgrel=1
+pkgdesc="mpv master + orender spatial audio decoder (HEAD; tracks upstream)"
+arch=('x86_64')
+url="https://github.com/mgth/mpv-omniphony"
+license=('GPL-2.0-or-later')
+depends=('liborender>=0.2' 'ffmpeg' 'libass' 'libplacebo' 'lua' 'libx11' 'mesa')
+makedepends=('meson' 'ninja' 'python' 'git')
+provides=('mpv' 'mpv-omniphony')
+conflicts=('mpv' 'mpv-omniphony')
+source=("mpv::git+https://github.com/mpv-player/mpv.git#branch=master")
+sha256sums=('SKIP')
+
+_repo="$startdir/.."     # mpv-omniphony repo root (src/, patches-master/)
+
+pkgver() {
+    cd "$srcdir/mpv"
+    printf 'r%s.%s' "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+prepare() {
+    cd "$srcdir/mpv"
+    shopt -s nullglob
+    local patches=("$_repo"/patches-master/*.patch)
+    if [ ${#patches[@]} -eq 0 ]; then
+        echo "no patches in ../patches-master — generate them first" >&2
+        return 1
+    fi
+    for p in "${patches[@]}"; do
+        echo "applying ${p##*/}"
+        patch -p1 < "$p"
+    done
+}
+
+build() {
+    cd "$srcdir/mpv"
+    arch-meson build -Dorender=enabled
+    meson compile -C build
+}
+
+package() {
+    cd "$srcdir/mpv"
+    meson install -C build --destdir="$pkgdir"
+
+    # Optional runtime lua scripts (Studio overlay, …). Not auto-loaded —
+    # users symlink into ~/.config/mpv/scripts/ or pass --script=… on the
+    # mpv command line. See README "Live overlay (optional)".
+    install -Dm644 "$_repo/runtime/omniphony-overlay.lua" \
+        "$pkgdir/usr/share/mpv-omniphony/scripts/omniphony-overlay.lua"
+}
