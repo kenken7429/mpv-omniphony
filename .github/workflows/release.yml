@@ -15,7 +15,13 @@ on:
 
 env:
   MPV_TAG: v0.41.0
-  LIBORENDER_TAG: liborender-v0.2.2
+  # Omniphony tag liborender is built from, in lockstep with the renderer.
+  # We build liborender FROM SOURCE here rather than downloading a pinned
+  # prebuilt release: that keeps orender.dll/.so and orender.h coherent by
+  # construction, and removes the stale-prebuilt skew that made mpv silently
+  # ship an old liborender (config parsed differently → default room). Bump
+  # this one line on each release.
+  OMNIPHONY_REF: v0.3.2
 
 jobs:
   build-linux:
@@ -31,23 +37,34 @@ jobs:
             libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev libswscale-dev \
             libass-dev libplacebo-dev liblua5.2-dev libx11-dev
 
-      - name: Download liborender Linux release
+      - name: Checkout Omniphony (renderer source)
+        uses: actions/checkout@v4
+        with:
+          repository: mgth/Omniphony
+          ref: ${{ env.OMNIPHONY_REF }}
+          path: omniphony
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build liborender from source
+        # orender_ffi only pulls orender_engine (audio-free) — no PipeWire/Tauri
+        # toolchains needed, same as Omniphony's own liborender-release workflow.
+        run: cargo build --release -p orender_ffi
+        working-directory: omniphony/omniphony-renderer
+        env:
+          RUSTFLAGS: -D warnings
+
+      - name: Install liborender into sysroot
         run: |
-          # Anonymous direct download instead of `gh release download`: the API
-          # path was returning HTTP 403 "account suspended" — likely an
-          # aggressive cross-repo token rate-limit. The release asset URL is
-          # publicly served so curl works without authentication.
-          mkdir -p sysroot/usr/lib sysroot/usr/include sysroot/usr/lib/pkgconfig /tmp/liborender
-          ver="${LIBORENDER_TAG#liborender-v}"
-          curl -fsSL \
-            "https://github.com/mgth/Omniphony/releases/download/${LIBORENDER_TAG}/${LIBORENDER_TAG}-linux-x86_64.zip" \
-            -o /tmp/liborender.zip
-          unzip -d /tmp/liborender /tmp/liborender.zip
-          cp /tmp/liborender/liborender.so sysroot/usr/lib/liborender.so.0
+          mkdir -p sysroot/usr/lib sysroot/usr/include sysroot/usr/lib/pkgconfig
+          rel=omniphony/omniphony-renderer/target/release
+          cp "$rel/liborender.so" sysroot/usr/lib/liborender.so.0
           ln -sf liborender.so.0 sysroot/usr/lib/liborender.so
-          cp /tmp/liborender/orender.h sysroot/usr/include/orender.h
+          cp omniphony/omniphony-renderer/orender_ffi/include/orender.h sysroot/usr/include/orender.h
           # Hand-write a minimal pkg-config so mpv's meson finds liborender.
-          ver="${LIBORENDER_TAG#liborender-v}"
+          # Version is cosmetic (meson only needs '>= 0.1'); track the Omniphony tag.
+          ver="${OMNIPHONY_REF#v}"
           cat > sysroot/usr/lib/pkgconfig/orender.pc <<EOF
           prefix=${{ github.workspace }}/sysroot/usr
           libdir=\${prefix}/lib
@@ -90,7 +107,41 @@ jobs:
           name: mpv-omniphony-linux-x86_64
           path: mpv-omniphony-*-linux-x86_64.zip
 
+  # Build orender.dll from the same Omniphony ref, natively on Windows (MSVC,
+  # C ABI) exactly like Omniphony's own liborender-release workflow. The mpv
+  # Windows job consumes this artifact instead of a pinned prebuilt release.
+  build-liborender-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout Omniphony (renderer source)
+        uses: actions/checkout@v4
+        with:
+          repository: mgth/Omniphony
+          ref: ${{ env.OMNIPHONY_REF }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build orender_ffi (release)
+        run: cargo build --release -p orender_ffi
+        working-directory: omniphony-renderer
+        env:
+          RUSTFLAGS: -D warnings
+
+      - name: Stage artifact
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          Copy-Item omniphony-renderer/target/release/orender.dll out/
+          Copy-Item omniphony-renderer/orender_ffi/include/orender.h out/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: liborender-windows-from-source
+          path: out
+
   build-windows:
+    needs: build-liborender-windows
     runs-on: ubuntu-latest
     # Arch base + Martchus's mingw-w64 binary repo gives us pre-built MinGW
     # builds of ffmpeg, libplacebo, libass, lua — the libs mpv needs that
@@ -202,18 +253,14 @@ jobs:
           EOF
           x86_64-w64-mingw32-pkg-config --modversion lua52
 
-      - name: Download liborender Windows release + install into MinGW sysroot
-        run: |
-          # Anonymous direct download — the GH API was returning a misleading
-          # HTTP 403 "account suspended" on cross-repo asset reads even with a
-          # valid GITHUB_TOKEN, while the public asset URL serves fine without
-          # auth (release is public).
-          mkdir -p /tmp/liborender
-          curl -fsSL \
-            "https://github.com/mgth/Omniphony/releases/download/${LIBORENDER_TAG}/${LIBORENDER_TAG}-windows-x86_64.zip" \
-            -o /tmp/liborender.zip
-          unzip -d /tmp/liborender /tmp/liborender.zip
+      - name: Download liborender (built from source)
+        uses: actions/download-artifact@v4
+        with:
+          name: liborender-windows-from-source
+          path: /tmp/liborender
 
+      - name: Install liborender into MinGW sysroot
+        run: |
           # Install directly into the MinGW sysroot the Martchus wrapper looks at,
           # so `x86_64-w64-mingw32-pkg-config` finds orender via its own
           # PKG_CONFIG_LIBDIR (which overrides any PKG_CONFIG_PATH we'd set).
@@ -223,7 +270,7 @@ jobs:
           # MinGW links against the DLL directly with -lorender (no import lib
           # needed for cdylibs that export everything).
           install -Dm755 /tmp/liborender/orender.dll "$SYS/lib/orender.dll"
-          ver="${LIBORENDER_TAG#liborender-v}"
+          ver="${OMNIPHONY_REF#v}"
           install -d "$SYS/lib/pkgconfig"
           cat > "$SYS/lib/pkgconfig/orender.pc" <<EOF
           prefix=$SYS
@@ -381,7 +428,7 @@ jobs:
             and point mpv at it with
             `--ad-orender-bridge-path=/path/to/bridge.{so,dll}`.
 
-            Built against liborender ${{ env.LIBORENDER_TAG }}.
+            liborender built from source at Omniphony ${{ env.OMNIPHONY_REF }}.
           files: |
             mpv-omniphony-*-linux-x86_64.zip
             mpv-omniphony-*-windows-x86_64.zip
