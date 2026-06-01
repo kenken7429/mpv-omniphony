@@ -1,0 +1,364 @@
+name: Integration Build
+
+# Rolling pre-release test build for testers, built against Omniphony `main`.
+# Manual on demand + once daily. Published under a single rolling `integration`
+# tag, marked as a pre-release so GitHub never shows it as the "Latest" release.
+#
+# NOTE: the build jobs below intentionally mirror `release.yml` (the source of
+# truth) with two changes: OMNIPHONY_REF tracks `main` instead of a fixed tag,
+# and assets are published as a rolling `integration` pre-release instead of a
+# draft v-tag. If these drift, reconcile against release.yml. (A future cleanup
+# could factor the build into a reusable `workflow_call` shared by both.)
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 5 * * *' # daily 05:00 UTC (after Omniphony's 04:00 build)
+
+env:
+  MPV_TAG: v0.41.0
+  # Track the integration branch so the daily build always carries the latest
+  # renderer. (release.yml pins a tag instead.)
+  OMNIPHONY_REF: main
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install mpv build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            meson ninja-build pkg-config gcc \
+            libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev libswscale-dev \
+            libass-dev libplacebo-dev liblua5.2-dev libx11-dev
+
+      - name: Checkout Omniphony (renderer source)
+        uses: actions/checkout@v4
+        with:
+          repository: mgth/Omniphony
+          ref: ${{ env.OMNIPHONY_REF }}
+          path: omniphony
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build liborender from source
+        run: cargo build --release -p orender_ffi
+        working-directory: omniphony/omniphony-renderer
+        env:
+          RUSTFLAGS: -D warnings
+
+      - name: Install liborender into sysroot
+        run: |
+          mkdir -p sysroot/usr/lib sysroot/usr/include sysroot/usr/lib/pkgconfig
+          rel=omniphony/omniphony-renderer/target/release
+          cp "$rel/liborender.so" sysroot/usr/lib/liborender.so.0
+          ln -sf liborender.so.0 sysroot/usr/lib/liborender.so
+          cp omniphony/omniphony-renderer/orender_ffi/include/orender.h sysroot/usr/include/orender.h
+          cat > sysroot/usr/lib/pkgconfig/orender.pc <<EOF
+          prefix=${{ github.workspace }}/sysroot/usr
+          libdir=\${prefix}/lib
+          includedir=\${prefix}/include
+
+          Name: orender
+          Description: Omniphony renderer C library
+          Version: 0.0.0-integration
+          Libs: -L\${libdir} -lorender
+          Cflags: -I\${includedir}
+          EOF
+
+      - name: Apply patches onto mpv
+        run: bash scripts/apply-patches.sh "$MPV_TAG"
+
+      - name: Build mpv with ad_orender
+        run: |
+          export PKG_CONFIG_PATH="${{ github.workspace }}/sysroot/usr/lib/pkgconfig"
+          export LD_LIBRARY_PATH="${{ github.workspace }}/sysroot/usr/lib"
+          cd "build/mpv-${MPV_TAG}"
+          meson setup _b -Dorender=enabled
+          meson compile -C _b
+
+      - name: Package (zip)
+        run: |
+          mkdir -p staging staging/scripts
+          cp "build/mpv-${MPV_TAG}/_b/mpv" staging/
+          cp sysroot/usr/lib/liborender.so.0 staging/
+          cp sysroot/usr/include/orender.h staging/
+          cp README.md staging/
+          cp runtime/omniphony-overlay.lua staging/scripts/
+          cd staging
+          zip -r "../mpv-omniphony-integration-linux-x86_64.zip" \
+            mpv liborender.so.0 orender.h README.md scripts
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mpv-omniphony-linux-x86_64
+          path: mpv-omniphony-integration-linux-x86_64.zip
+
+  build-liborender-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout Omniphony (renderer source)
+        uses: actions/checkout@v4
+        with:
+          repository: mgth/Omniphony
+          ref: ${{ env.OMNIPHONY_REF }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build orender_ffi (release)
+        run: cargo build --release -p orender_ffi
+        working-directory: omniphony-renderer
+        env:
+          RUSTFLAGS: -D warnings
+
+      - name: Stage artifact
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          Copy-Item omniphony-renderer/target/release/orender.dll out/
+          Copy-Item omniphony-renderer/orender_ffi/include/orender.h out/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: liborender-windows-from-source
+          path: out
+
+  build-windows:
+    needs: build-liborender-windows
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bootstrap Arch + Martchus mingw-w64 repo
+        run: |
+          pacman-key --init
+          cat >> /etc/pacman.conf <<'EOF'
+
+          [ownstuff]
+          SigLevel = Optional TrustAll
+          Server = https://martchus.no-ip.biz/repo/arch/$repo/os/$arch
+          EOF
+          pacman -Syu --noconfirm
+
+      - name: Install MinGW toolchain + mpv deps
+        run: |
+          pacman -S --noconfirm --needed \
+            base-devel git unzip zip curl \
+            mingw-w64-gcc \
+            mingw-w64-pkg-config \
+            mingw-w64-meson \
+            mingw-w64-ffmpeg \
+            mingw-w64-libplacebo \
+            mingw-w64-libass
+
+      - name: Build & install libsrt from source (ABI-matched to our libstdc++)
+        run: |
+          SYS=/usr/x86_64-w64-mingw32
+          pacman -S --noconfirm --needed \
+            mingw-w64-cmake mingw-w64-openssl
+          SRT_VER=1.5.5
+          curl -sLO "https://github.com/Haivision/srt/archive/refs/tags/v${SRT_VER}.tar.gz"
+          tar xzf "v${SRT_VER}.tar.gz"
+          cd "srt-${SRT_VER}"
+          mkdir build && cd build
+          x86_64-w64-mingw32-cmake .. \
+            -DENABLE_APPS=OFF \
+            -DENABLE_BONDING=OFF \
+            -DENABLE_STATIC=OFF \
+            -DENABLE_SHARED=ON \
+            -DCMAKE_INSTALL_PREFIX="$SYS"
+          cmake --build . -j"$(nproc)"
+          cmake --install .
+          if [ -f "$SYS/bin/srt.dll" ] && [ ! -f "$SYS/bin/libsrt.dll" ]; then
+            cp "$SYS/bin/srt.dll" "$SYS/bin/libsrt.dll"
+          fi
+          missing=$(x86_64-w64-mingw32-objdump -p "$SYS/bin/libsrt.dll" \
+            | grep -cE "_ZNSi5seekgESt4fposIiE|_ZSt21ios_base_library_initv" || true)
+          test "$missing" -eq 0 || { echo "FAIL: libsrt still imports forbidden libstdc++ symbol(s)" >&2; exit 1; }
+
+      - name: Build & install Lua 5.2 (MinGW)
+        run: |
+          SYS=/usr/x86_64-w64-mingw32
+          LUA_VER=5.2.4
+          curl -sLO "https://www.lua.org/ftp/lua-${LUA_VER}.tar.gz"
+          tar xzf "lua-${LUA_VER}.tar.gz"
+          cd "lua-${LUA_VER}"
+          make PLAT=mingw \
+            CC=x86_64-w64-mingw32-gcc \
+            AR="x86_64-w64-mingw32-ar rcu" \
+            RANLIB=x86_64-w64-mingw32-ranlib \
+            mingw
+          install -Dm755 src/lua52.dll       "$SYS/bin/lua52.dll"
+          install -Dm644 src/liblua.a        "$SYS/lib/liblua52.a"
+          install -Dm644 src/lua.h           "$SYS/include/lua.h"
+          install -Dm644 src/lualib.h        "$SYS/include/lualib.h"
+          install -Dm644 src/lauxlib.h       "$SYS/include/lauxlib.h"
+          install -Dm644 src/luaconf.h       "$SYS/include/luaconf.h"
+          install -d "$SYS/lib/pkgconfig"
+          cat > "$SYS/lib/pkgconfig/lua52.pc" <<EOF
+          prefix=$SYS
+          libdir=\${prefix}/lib
+          includedir=\${prefix}/include
+
+          Name: Lua
+          Description: Lua 5.2 (MinGW cross build)
+          Version: ${LUA_VER}
+          Libs: -L\${libdir} -llua52
+          Cflags: -I\${includedir}
+          EOF
+          x86_64-w64-mingw32-pkg-config --modversion lua52
+
+      - name: Download liborender (built from source)
+        uses: actions/download-artifact@v4
+        with:
+          name: liborender-windows-from-source
+          path: /tmp/liborender
+
+      - name: Install liborender into MinGW sysroot
+        run: |
+          SYS=/usr/x86_64-w64-mingw32
+          install -Dm755 /tmp/liborender/orender.dll "$SYS/bin/orender.dll"
+          install -Dm644 /tmp/liborender/orender.h   "$SYS/include/orender.h"
+          install -Dm755 /tmp/liborender/orender.dll "$SYS/lib/orender.dll"
+          install -d "$SYS/lib/pkgconfig"
+          cat > "$SYS/lib/pkgconfig/orender.pc" <<EOF
+          prefix=$SYS
+          libdir=\${prefix}/lib
+          includedir=\${prefix}/include
+
+          Name: orender
+          Description: Omniphony renderer C library
+          Version: 0.0.0-integration
+          Libs: -L\${libdir} -lorender
+          Cflags: -I\${includedir}
+          EOF
+          x86_64-w64-mingw32-pkg-config --modversion orender
+
+      - name: Apply patches onto mpv
+        run: bash scripts/apply-patches.sh "$MPV_TAG"
+
+      - name: Write meson cross-file (x86_64-w64-mingw32)
+        run: |
+          mkdir -p sysroot
+          cat > sysroot/mingw-cross.ini <<'EOF'
+          [binaries]
+          c = 'x86_64-w64-mingw32-gcc'
+          cpp = 'x86_64-w64-mingw32-g++'
+          ar = 'x86_64-w64-mingw32-ar'
+          strip = 'x86_64-w64-mingw32-strip'
+          pkg-config = 'x86_64-w64-mingw32-pkg-config'
+          windres = 'x86_64-w64-mingw32-windres'
+
+          [host_machine]
+          system = 'windows'
+          cpu_family = 'x86_64'
+          cpu = 'x86_64'
+          endian = 'little'
+          EOF
+
+      - name: Cross-compile mpv (MinGW)
+        run: |
+          cd "build/mpv-${MPV_TAG}"
+          meson setup _b \
+            --cross-file="$GITHUB_WORKSPACE/sysroot/mingw-cross.ini" \
+            -Dorender=enabled \
+            -Dlua=lua52 \
+            -Dasio=enabled
+          meson compile -C _b
+
+      - name: Package (zip)
+        run: |
+          SYS=/usr/x86_64-w64-mingw32
+          mkdir -p staging staging/scripts
+          cp "build/mpv-${MPV_TAG}/_b/mpv.exe" staging/
+          cp runtime/omniphony-overlay.lua staging/scripts/
+          cp "build/mpv-${MPV_TAG}/_b/mpv.com" staging/
+          cp "$SYS/bin/orender.dll" staging/
+          cp "$SYS/include/orender.h" staging/
+          cp README.md staging/
+          should_skip() {
+            case "$1" in
+              KERNEL32.*|USER32.*|GDI32.*|ADVAPI32.*|MSVCRT.*|SHELL32.*|ole32.*|OLEAUT32.*|WS2_32.*|IMM32.*|VERSION.*|WINMM.*|d3d*|dxgi*|opengl32.*|setupapi.*|RPCRT4.*|bcrypt.*|CRYPT32.*|comdlg32.*|netapi32.*|powrprof.*|psapi.*|userenv.*|wininet.*|wintrust.*|comctl32.*|iphlpapi.*|secur32.*|uxtheme.*|dwmapi.*|crypt32.*|ncrypt.*|dnsapi.*|mpr.*|mswsock.*|odbc32.*|odbccp32.*)
+                return 0 ;;
+            esac
+            return 1
+          }
+          worklist=(staging/mpv.exe)
+          while [ ${#worklist[@]} -gt 0 ]; do
+            exe="${worklist[0]}"
+            worklist=("${worklist[@]:1}")
+            echo "scanning $exe"
+            for dll in $(x86_64-w64-mingw32-objdump -p "$exe" 2>/dev/null \
+                          | awk '/DLL Name:/ {print $3}'); do
+              should_skip "$dll" && continue
+              [ -f "staging/$dll" ] && continue
+              if [ -f "$SYS/bin/$dll" ]; then
+                cp "$SYS/bin/$dll" staging/
+                worklist+=("staging/$dll")
+                echo "  + $dll"
+              else
+                echo "  ! NOT FOUND: $dll"
+              fi
+            done
+          done
+          for dll in libstdc++-6.dll libgcc_s_seh-1.dll libwinpthread-1.dll; do
+            if [ -f "$SYS/bin/$dll" ] && [ ! -f "staging/$dll" ]; then
+              cp "$SYS/bin/$dll" staging/
+              echo "  + $dll (forced)"
+            fi
+          done
+        shell: bash
+      - name: Package final zip
+        run: |
+          ls -la staging/
+          cd staging
+          zip -r "../mpv-omniphony-integration-windows-x86_64.zip" .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mpv-omniphony-windows-x86_64
+          path: mpv-omniphony-integration-windows-x86_64.zip
+
+  publish-integration:
+    needs: [build-linux, build-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: mpv-omniphony-linux-x86_64
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: mpv-omniphony-windows-x86_64
+
+      # Reset the rolling release + tag so assets are replaced, not accumulated.
+      - name: Delete previous integration release + tag (if any)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release delete integration --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes || true
+
+      - name: Publish rolling integration pre-release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: integration
+          name: 'mpv-omniphony (integration build)'
+          prerelease: true
+          make_latest: false
+          body: |
+            Rolling integration build of mpv-omniphony, compiled against Omniphony `main`
+            (liborender built from source). **For testers — NOT a stable release.**
+            Rebuilt daily and on demand; assets here are replaced each run.
+
+            **NOT bundled:** the decoder bridge plugin (`*_bridge.dll` / `.so`).
+            Provide it via `--ad-orender-bridge-path=<absolute path>` or drop it
+            next to `mpv(.exe)`.
+          files: |
+            mpv-omniphony-integration-linux-x86_64.zip
+            mpv-omniphony-integration-windows-x86_64.zip
