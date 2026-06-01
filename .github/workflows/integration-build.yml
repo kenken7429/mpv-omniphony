@@ -64,7 +64,7 @@ jobs:
 
           Name: orender
           Description: Omniphony renderer C library
-          Version: 0.0.0-integration
+          Version: 0.99.0
           Libs: -L\${libdir} -lorender
           Cflags: -I\${includedir}
           EOF
@@ -233,7 +233,7 @@ jobs:
 
           Name: orender
           Description: Omniphony renderer C library
-          Version: 0.0.0-integration
+          Version: 0.99.0
           Libs: -L\${libdir} -lorender
           Cflags: -I\${includedir}
           EOF
