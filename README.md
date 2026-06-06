@@ -223,6 +223,30 @@ cap). Studio drains mpv's IPC responses in a dedicated reader thread,
 so a long playback session can't fill the kernel reply buffer and
 freeze mpv's main thread.
 
+#### Controlling the overlay from mpv
+
+The overlay script grabs **no keys by default** (mpv convention: you own
+your `input.conf`). It exposes named, keyless bindings — map your own
+keys with `script-binding omniphony-overlay/<name>`, or drive them from
+any client with `script-message omniphony-overlay <name>`:
+
+| Binding / message     | Action                                           |
+| --------------------- | ------------------------------------------------ |
+| `toggle`              | master overlay on/off                            |
+| `labels`              | object-name labels on/off                        |
+| `objects`             | objects (markers + trails + depth lines) on/off  |
+| `trails`              | motion trails on/off                             |
+| `heatmap`             | energy heatmap field on/off                      |
+| `heatmap-colormap`    | cycle the heatmap gradient                       |
+| `heatmap-bands-inc` / `heatmap-bands-dec` | more / fewer heatmap depth planes |
+
+Each toggle flips the control inside liborender and reports the new state
+in the OSD, so it stays in sync with Studio's OSC changes. See
+[`runtime/input.conf.example`](runtime/input.conf.example) for a ready-to-copy
+set of bindings. (The toggles need liborender ABI ≥ 0.4; on an older
+library the script still loads and `toggle` works, but the sub-controls
+report "unavailable".)
+
 ## mpv fork workflow
 
 Develop the integration in a fork of `mpv-player/mpv`:

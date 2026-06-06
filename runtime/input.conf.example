@@ -1,0 +1,17 @@
+# Omniphony spatial overlay — example key bindings.
+#
+# The overlay script (omniphony-overlay.lua) grabs NO keys by default, following
+# mpv convention: you own your input.conf. Copy the lines you want into your own
+# input.conf (uncomment and pick your keys). Each command is also reachable via
+#   script-message omniphony-overlay <toggle|labels|objects|trails|heatmap|colormap|bands-inc|bands-dec|enable|disable>
+#
+# Form: <key>  script-binding omniphony-overlay/<name>
+
+Ctrl+o  script-binding omniphony-overlay/toggle              # master on/off
+#l      script-binding omniphony-overlay/labels              # object name labels
+#o      script-binding omniphony-overlay/objects             # objects (markers + trails + depth lines)
+#t      script-binding omniphony-overlay/trails              # motion trails
+#h      script-binding omniphony-overlay/heatmap             # energy heatmap field
+#c      script-binding omniphony-overlay/heatmap-colormap    # cycle heatmap gradient
+#=      script-binding omniphony-overlay/heatmap-bands-inc   # more heatmap depth planes
+#-      script-binding omniphony-overlay/heatmap-bands-dec   # fewer heatmap depth planes
