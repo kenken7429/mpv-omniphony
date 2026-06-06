@@ -39,6 +39,16 @@ ffi.cdef([[
   void orender_overlay_set_enabled(int enabled);
   size_t orender_overlay_heatmap_bgra(uint32_t res_x, uint32_t res_y,
                                       uint8_t *out, size_t cap, int32_t *geom);
+  /* Per-control toggles (liborender ABI >= 0.4). Each flips the control and
+     returns the new state (1/0 for booleans, the new value for the heatmap
+     band/colormap variants). Absent on older libraries — guarded at runtime. */
+  int orender_overlay_toggle(void);
+  int orender_overlay_toggle_labels(void);
+  int orender_overlay_toggle_objects(void);
+  int orender_overlay_toggle_trails(void);
+  int orender_overlay_toggle_heatmap(void);
+  uint32_t orender_overlay_cycle_heatmap_colormap(void);
+  uint32_t orender_overlay_adjust_heatmap_bands(int32_t delta);
 ]])
 
 -- liborender is already resident in the mpv process: the patched mpv links it
@@ -190,6 +200,29 @@ mp.add_periodic_timer(1 / REDRAW_HZ, redraw)
 mp.observe_property("osd-width", "number", function() redraw() end)
 mp.observe_property("osd-height", "number", function() redraw() end)
 
+-- ── controls ─────────────────────────────────────────────────────────────
+-- Following mpv convention, controls are exposed as *named* bindings (no keys
+-- grabbed by default) plus a `script-message`; the user binds keys in their own
+-- input.conf (see input.conf.example). Each toggle flips the control inside
+-- liborender and shows the resulting state in the OSD; the renderer is the
+-- single source of truth, so this stays in sync with Studio's OSC changes.
+
+local function osd(msg)
+  mp.osd_message(msg, 1)
+end
+
+local function on_off(v)
+  return v ~= 0 and "on" or "off"
+end
+
+-- Is an (ABI >= 0.4) FFI symbol present? Older liborender lacks the toggles; we
+-- degrade gracefully rather than erroring out the whole script.
+local function has_sym(name)
+  return pcall(function() return C[name] end)
+end
+
+-- Absolute master enable/disable. Also gates this script's redraw timer and
+-- hides both OSD layers when off.
 local function set_active(on)
   enabled = on
   C.orender_overlay_set_enabled(on and 1 or 0)
@@ -201,21 +234,70 @@ local function set_active(on)
   end
 end
 
--- Manual control (external client / script-message).
-mp.register_script_message("omniphony-overlay", function(cmd)
-  if cmd == "enable" then
-    set_active(true)
-  elseif cmd == "disable" then
-    set_active(false)
-  elseif cmd == "toggle" then
+-- Master toggle: flip in the library (returns the new state) so it tracks
+-- Studio's OSC changes; fall back to the local mirror on older libraries.
+local function toggle_master()
+  if has_sym("orender_overlay_toggle") then
+    enabled = C.orender_overlay_toggle() ~= 0
+    if enabled then redraw() else hide(); hide_heatmap() end
+  else
     set_active(not enabled)
   end
-end)
+  osd("Spatial overlay: " .. on_off(enabled and 1 or 0))
+end
 
--- Default keybind so the overlay can be toggled without studio (rebindable in
--- input.conf via the `omniphony-overlay-toggle` command name).
-mp.add_key_binding("Ctrl+o", "omniphony-overlay-toggle", function()
-  set_active(not enabled)
+-- Generic boolean sub-toggle (labels / objects / trails / heatmap).
+local function bool_toggle(sym, label)
+  if not has_sym(sym) then
+    osd(label .. ": unavailable (update liborender)")
+    return
+  end
+  osd(label .. ": " .. on_off(C[sym]()))
+  redraw()
+end
+
+local function cycle_colormap()
+  if not has_sym("orender_overlay_cycle_heatmap_colormap") then
+    osd("Heatmap colormap: unavailable (update liborender)")
+    return
+  end
+  osd("Heatmap colormap: " .. tonumber(C.orender_overlay_cycle_heatmap_colormap()))
+  redraw()
+end
+
+local function adjust_bands(delta)
+  if not has_sym("orender_overlay_adjust_heatmap_bands") then
+    osd("Heatmap planes: unavailable (update liborender)")
+    return
+  end
+  osd("Heatmap planes: " .. tonumber(C.orender_overlay_adjust_heatmap_bands(delta)))
+  redraw()
+end
+
+-- Named, keyless bindings — the user maps keys via
+-- `script-binding omniphony-overlay/<name>` in input.conf.
+mp.add_key_binding(nil, "toggle", toggle_master)
+mp.add_key_binding(nil, "labels", function() bool_toggle("orender_overlay_toggle_labels", "Overlay labels") end)
+mp.add_key_binding(nil, "objects", function() bool_toggle("orender_overlay_toggle_objects", "Overlay objects") end)
+mp.add_key_binding(nil, "trails", function() bool_toggle("orender_overlay_toggle_trails", "Overlay trails") end)
+mp.add_key_binding(nil, "heatmap", function() bool_toggle("orender_overlay_toggle_heatmap", "Energy heatmap") end)
+mp.add_key_binding(nil, "heatmap-colormap", cycle_colormap)
+mp.add_key_binding(nil, "heatmap-bands-inc", function() adjust_bands(1) end)
+mp.add_key_binding(nil, "heatmap-bands-dec", function() adjust_bands(-1) end)
+
+-- Manual control (external client / `script-message omniphony-overlay <cmd>`).
+mp.register_script_message("omniphony-overlay", function(cmd)
+  if cmd == "enable" then set_active(true)
+  elseif cmd == "disable" then set_active(false)
+  elseif cmd == "toggle" then toggle_master()
+  elseif cmd == "labels" then bool_toggle("orender_overlay_toggle_labels", "Overlay labels")
+  elseif cmd == "objects" then bool_toggle("orender_overlay_toggle_objects", "Overlay objects")
+  elseif cmd == "trails" then bool_toggle("orender_overlay_toggle_trails", "Overlay trails")
+  elseif cmd == "heatmap" then bool_toggle("orender_overlay_toggle_heatmap", "Energy heatmap")
+  elseif cmd == "colormap" then cycle_colormap()
+  elseif cmd == "bands-inc" then adjust_bands(1)
+  elseif cmd == "bands-dec" then adjust_bands(-1)
+  end
 end)
 
 -- Clear on shutdown so the OSD doesn't linger past quit.
