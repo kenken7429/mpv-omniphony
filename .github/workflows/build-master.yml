@@ -32,7 +32,7 @@ jobs:
           sudo apt-get install -y \
             meson ninja-build pkg-config gcc \
             libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev libswscale-dev \
-            libass-dev libplacebo-dev liblua5.2-dev libx11-dev
+            libass-dev liblua5.2-dev libx11-dev python3-jinja2
 
       - name: Build & install a mock liborender
         run: bash .github/scripts/mock-liborender.sh
@@ -46,6 +46,18 @@ jobs:
           src="$(ls -d build/mpv-master-* | grep -v '^build/mpv-master-clone$' | head -n1)"
           echo "src=$src" >> "$GITHUB_OUTPUT"
           echo ">> built against $src"
+
+      # mpv master requires libplacebo >= 7.x while ubuntu-latest apt ships 6.x.
+      # Upstream's documented answer is the meson subproject fallback (mpv's
+      # dependency() even sets default_library=static + demos=false for it), so
+      # track libplacebo master the same way this workflow tracks mpv master.
+      # python3-jinja2 above is needed by libplacebo's glad code generator.
+      - name: Provide libplacebo as a meson subproject
+        run: |
+          mkdir -p "${{ steps.snap.outputs.src }}/subprojects"
+          git clone --depth 1 --recurse-submodules \
+            https://code.videolan.org/videolan/libplacebo \
+            "${{ steps.snap.outputs.src }}/subprojects/libplacebo"
 
       - name: Configure & build
         run: |
