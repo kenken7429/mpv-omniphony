@@ -1,8 +1,8 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Mathieu GRENET <mathieu@mgth.fr>
 Date: Tue, 26 May 2026 15:32:46 +0200
-Subject: [PATCH 4/7] ao/asio: fix --asio-* option prefix in error message and
- comment
+Subject: [PATCH 04/10] ao/asio: fix --asio-* option prefix in error message
+ and comment
 
 The driver name is `asio`, and the m_option entries use
 `.options_prefix = "asio"`, so the public option names are

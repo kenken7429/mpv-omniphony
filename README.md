@@ -175,60 +175,24 @@ band. `(X = 0, Z = 0.5)` stays at screen centre across the whole `Y`
 range so the projection looks coherent in fullscreen, letterboxed and
 windowed mpv.
 
-It's opt-in — install the lua and tell mpv to expose its IPC endpoint
-once.
+**Nothing to install**: the overlay client is built into mpv itself
+(part of the `ad_orender` patch set, compiled whenever the `orender`
+feature is enabled). It pulls the finished ASS scene and the heatmap
+bitmap straight from liborender inside the mpv process — no Lua script,
+no LuaJIT requirement, no IPC socket, no Studio dependency. The overlay
+starts enabled and simply stays blank until spatial content is decoded.
 
-**Linux / macOS** (Unix domain socket):
-
-```sh
-# 1. enable the overlay script (auto-loads from ~/.config/mpv/scripts/)
-mkdir -p ~/.config/mpv/scripts
-ln -s /usr/share/mpv-omniphony/scripts/omniphony-overlay.lua \
-      ~/.config/mpv/scripts/
-
-# 2. expose mpv's JSON IPC socket so Studio can push frames into it
-echo 'input-ipc-server=/tmp/omniphony-mpv.sock' >> ~/.config/mpv/mpv.conf
-```
-
-**Windows** (named pipe — mpv uses Win32 pipes, not Unix sockets):
-
-```powershell
-# 1. enable the overlay script (auto-loads from %APPDATA%\mpv\scripts\)
-$dst = "$env:APPDATA\mpv\scripts\omniphony-overlay.lua"
-mkdir -Force (Split-Path $dst)
-Copy-Item .\omniphony-overlay.lua $dst
-
-# 2. expose mpv's JSON IPC pipe. mpv automatically prepends the
-#    `\\.\pipe\` namespace, so pass just the bare name — passing the
-#    full path through mpv.conf is ambiguous (backslash escaping vs
-#    UNC interpretation) and easy to get wrong.
-Add-Content "$env:APPDATA\mpv\mpv.conf" 'input-ipc-server=omniphony-mpv'
-```
-
-Then in Studio: open the *Display* panel, toggle **mpv overlay** on and
-enter the **full** IPC endpoint Studio should connect to — symmetric
-Unix path `/tmp/omniphony-mpv.sock` on Linux / macOS, fully qualified
-Win32 pipe path `\\.\pipe\omniphony-mpv` on Windows (which is what
-mpv created from the bare name above). Studio uses the literal as-is
-(same convention as the audio input pipe — no normalisation). The
-toggle and endpoint are persisted to Studio's config dir; the overlay
-reconnects automatically when mpv restarts.
-
-Sanity check on Windows — after starting mpv, `dir \\.\pipe\` in a
-cmd.exe window should list `omniphony-mpv`. If it doesn't, mpv didn't
-pick up the option (wrong mpv.conf path, typo, etc).
-
-The overlay's pacing follows the renderer's metering rate (no upper
-cap). Studio drains mpv's IPC responses in a dedicated reader thread,
-so a long playback session can't fill the kernel reply buffer and
-freeze mpv's main thread.
+Studio still configures the overlay (trails, A/B tags, heatmap
+parameters) over OSC, into the renderer, whenever it is connected to the
+same liborender instance.
 
 #### Controlling the overlay from mpv
 
-The overlay script grabs **no keys by default** (mpv convention: you own
+The overlay client grabs **no keys by default** (mpv convention: you own
 your `input.conf`). It exposes named, keyless bindings — map your own
-keys with `script-binding omniphony-overlay/<name>`, or drive them from
-any client with `script-message omniphony-overlay <name>`:
+keys with `script-binding omniphony_overlay/<name>` (underscore: mpv
+client names are always alphanumeric), or drive them from any client
+with `script-message omniphony-overlay <name>`:
 
 | Binding / message     | Action                                           |
 | --------------------- | ------------------------------------------------ |
@@ -243,9 +207,7 @@ any client with `script-message omniphony-overlay <name>`:
 Each toggle flips the control inside liborender and reports the new state
 in the OSD, so it stays in sync with Studio's OSC changes. See
 [`runtime/input.conf.example`](runtime/input.conf.example) for a ready-to-copy
-set of bindings. (The toggles need liborender ABI ≥ 0.4; on an older
-library the script still loads and `toggle` works, but the sub-controls
-report "unavailable".)
+set of bindings.
 
 ## mpv fork workflow
 
