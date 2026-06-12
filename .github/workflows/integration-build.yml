@@ -82,15 +82,14 @@ jobs:
 
       - name: Package (zip)
         run: |
-          mkdir -p staging staging/scripts
+          mkdir -p staging
           cp "build/mpv-${MPV_TAG}/_b/mpv" staging/
           cp sysroot/usr/lib/liborender.so.0 staging/
           cp sysroot/usr/include/orender.h staging/
           cp README.md staging/
-          cp runtime/omniphony-overlay.lua staging/scripts/
           cd staging
           zip -r "../mpv-omniphony-integration-linux-x86_64.zip" \
-            mpv liborender.so.0 orender.h README.md scripts
+            mpv liborender.so.0 orender.h README.md
 
       - uses: actions/upload-artifact@v4
         with:
@@ -274,9 +273,8 @@ jobs:
       - name: Package (zip)
         run: |
           SYS=/usr/x86_64-w64-mingw32
-          mkdir -p staging staging/scripts
+          mkdir -p staging
           cp "build/mpv-${MPV_TAG}/_b/mpv.exe" staging/
-          cp runtime/omniphony-overlay.lua staging/scripts/
           cp "build/mpv-${MPV_TAG}/_b/mpv.com" staging/
           cp "$SYS/bin/orender.dll" staging/
           cp "$SYS/include/orender.h" staging/

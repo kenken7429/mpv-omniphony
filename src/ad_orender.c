@@ -187,6 +187,12 @@ static void ad_orender_process(struct mp_filter *da)
     bool failed = false;
     double pts = mpkt->pts;   /* demuxer timestamp; drives A/V sync (see below) */
 
+    /* The output channel count can change mid-stream (Studio toggling the
+     * binaural ⇄ speaker output mode), so refresh it every packet and size
+     * the scratch buffer for the current mode. */
+    uint32_t cur_ch = orender_channel_count(p->renderer);
+    if (cur_ch > 0 && cur_ch <= MP_NUM_CHANNELS && (int)cur_ch != p->channels)
+        p->channels = (int)cur_ch;
     int ch = p->channels > 0 ? p->channels : 1;
     size_t capacity = (size_t)4096 * (size_t)ch;
     float *samples = talloc_array(NULL, float, capacity);
@@ -223,6 +229,26 @@ static void ad_orender_process(struct mp_filter *da)
 
     if (n_frames == 0)
         goto done;   /* packet consumed; no output yet (need more data) */
+
+    /* Live output-mode switches change the channel count mid-stream: rebuild
+     * the chmap so the frame below is allocated for what we actually copy —
+     * mpv's filter chain renegotiates downstream formats per frame. Without
+     * this, switching binaural → speakers made the memcpy below write
+     * n_frames × 12 floats into a 2-channel plane (heap corruption, SIGSEGV).
+     */
+    if (n_ch > 0 && n_ch != (uint32_t)p->chmap.num) {
+        MP_VERBOSE(da, "renderer output changed to %u channels; renegotiating chmap\n",
+                   n_ch);
+        if (!build_chmap(p))
+            MP_WARN(da, "output layout has speakers with no mpv mapping\n");
+        if (n_ch != (uint32_t)p->chmap.num) {
+            /* Safety net: still inconsistent → drop this frame instead of
+             * overflowing the plane. */
+            MP_ERR(da, "channel count %u does not match output layout (%d); "
+                       "dropping frame\n", n_ch, p->chmap.num);
+            goto done;
+        }
+    }
 
     out = mp_aframe_create();
     mp_aframe_set_format(out, AF_FORMAT_FLOAT);   /* interleaved float32 */

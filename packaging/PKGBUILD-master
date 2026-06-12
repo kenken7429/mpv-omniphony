@@ -53,10 +53,4 @@ build() {
 package() {
     cd "$srcdir/mpv"
     meson install -C build --destdir="$pkgdir"
-
-    # Optional runtime lua scripts (Studio overlay, …). Not auto-loaded —
-    # users symlink into ~/.config/mpv/scripts/ or pass --script=… on the
-    # mpv command line. See README "Live overlay (optional)".
-    install -Dm644 "$_repo/runtime/omniphony-overlay.lua" \
-        "$pkgdir/usr/share/mpv-omniphony/scripts/omniphony-overlay.lua"
 }
