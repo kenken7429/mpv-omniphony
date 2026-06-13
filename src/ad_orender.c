@@ -347,12 +347,12 @@ static struct mp_decoder *create(struct mp_filter *parent,
     p->renderer = orender_create(&cfg);
     if (!p->renderer) {
         /* liborender resolves the config per-OS (see
-         * renderer/src/config.rs::default_config_path): %APPDATA% on
-         * Windows, $XDG_CONFIG_HOME (or ~/.config) elsewhere. Match its
-         * convention in the user-facing hint. */
+         * renderer/src/config.rs::default_config_path): %ProgramData% on
+         * Windows (machine-wide, shared with the service), $XDG_CONFIG_HOME
+         * (or ~/.config) elsewhere. Match its convention in the hint. */
 #ifdef _WIN32
         MP_ERR(da, "orender_create failed — set render.bridge_path in your "
-                   "omniphony config (%%APPDATA%%\\omniphony\\config.yaml); "
+                   "omniphony config (%%ProgramData%%\\omniphony\\config.yaml); "
                    "see stderr for the liborender error\n");
 #else
         MP_ERR(da, "orender_create failed — set render.bridge_path in your "
