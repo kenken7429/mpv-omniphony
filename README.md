@@ -186,6 +186,13 @@ Studio still configures the overlay (trails, A/B tags, heatmap
 parameters) over OSC, into the renderer, whenever it is connected to the
 same liborender instance.
 
+> **Upgrading from the old Lua overlay?** Earlier versions shipped an
+> `omniphony-overlay.lua` you copied into your mpv `scripts/` directory.
+> It is no longer needed — you can delete it. On the released builds (PUC
+> Lua) it self-disables anyway (no LuaJIT FFI), so a leftover copy is
+> harmless; on a LuaJIT build it would just redundantly drive the same
+> overlay. Removing it keeps things tidy.
+
 #### Controlling the overlay from mpv
 
 The overlay client grabs **no keys by default** (mpv convention: you own

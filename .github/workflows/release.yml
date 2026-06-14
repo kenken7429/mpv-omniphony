@@ -416,6 +416,11 @@ jobs:
             Windows. The live overlay is built into mpv itself — no script to
             install.
 
+            **Upgrading?** The overlay is now built in: delete any
+            `omniphony-overlay.lua` you previously copied into your mpv
+            `scripts/` directory. A leftover copy is harmless (it self-disables
+            on these PUC-Lua builds), but it is no longer needed.
+
             **NOT bundled:** the decoder bridge plugin
             (`omniphony_bridge.so` / `.dll`). Licensing constraints on the
             underlying codec mean users must obtain it themselves from
