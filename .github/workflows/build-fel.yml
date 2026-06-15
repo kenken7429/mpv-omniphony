@@ -1,0 +1,396 @@
+name: FEL Build
+
+# Experimental Dolby Vision Profile 7 FEL build of mpv-omniphony.
+#
+# FEL needs three libs that no released package ships (see deps-fel/pins-fel.env
+# and the "Dolby Vision FEL" section of README.md):
+#   libdovi, libplacebo dv-fel (PL_API_VER >= 367), ffmpeg + dovi_split BSF.
+# scripts/build-fel-deps.sh builds them into a prefix; the mpv build then links
+# that prefix FIRST so it shadows the system/Martchus ffmpeg+libplacebo.
+#
+# Opt-in only: this does NOT touch integration-build.yml / release.yml. FEL pairs
+# with the master-tracking patch flow (apply-patches-fel.sh), not the pinned
+# v0.41.0 release tree.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 7 * * 1' # weekly, Monday 07:00 UTC
+  push:
+    paths:
+      - 'patches-fel/**'
+      - 'deps-fel/**'
+      - 'scripts/build-fel-deps.sh'
+      - 'scripts/apply-patches-fel.sh'
+      - '.github/workflows/build-fel.yml'
+
+env:
+  OMNIPHONY_REF: main
+
+jobs:
+  # Resolve the live dv-fel HEAD once so both platforms key their caches on the
+  # same SHA (kasper93 force-pushes dv-fel ~daily).
+  resolve-dvfel:
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.r.outputs.sha }}
+    steps:
+      - id: r
+        run: |
+          sha=$(git ls-remote https://code.videolan.org/kasper93/libplacebo.git dv-fel | cut -f1)
+          echo "dv-fel HEAD = $sha"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+  build-linux:
+    needs: resolve-dvfel
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build deps (mpv + FEL libs from source)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            meson ninja-build pkg-config gcc nasm git patchelf zlib1g-dev \
+            libass-dev liblua5.2-dev libx11-dev \
+            libvulkan-dev libshaderc-dev glslang-dev liblcms2-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache FEL dep prefix
+        id: felcache
+        uses: actions/cache@v4
+        with:
+          path: fel-prefix
+          key: fel-linux-${{ needs.resolve-dvfel.outputs.sha }}-${{ hashFiles('deps-fel/**') }}
+
+      - name: Build FEL deps (libdovi + libplacebo dv-fel + ffmpeg dovi_split)
+        if: steps.felcache.outputs.cache-hit != 'true'
+        run: |
+          PREFIX="$GITHUB_WORKSPACE/fel-prefix" WORK="$GITHUB_WORKSPACE/fel-work" \
+            bash scripts/build-fel-deps.sh
+
+      - name: Verify FEL deps
+        run: |
+          export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/fel-prefix/lib/pkgconfig:$PKG_CONFIG_PATH"
+          export PATH="$GITHUB_WORKSPACE/fel-prefix/bin:$PATH"
+          pkg-config --atleast-version=7.370 libplacebo
+          echo "libplacebo $(pkg-config --modversion libplacebo)"
+          ffmpeg -hide_banner -bsfs | grep -q dovi_split
+
+      - name: Checkout Omniphony (renderer source)
+        uses: actions/checkout@v4
+        with:
+          repository: mgth/Omniphony
+          ref: ${{ env.OMNIPHONY_REF }}
+          path: omniphony
+
+      - name: Build liborender from source
+        run: cargo build --release -p orender_ffi
+        working-directory: omniphony/omniphony-renderer
+        env:
+          RUSTFLAGS: -D warnings
+
+      - name: Install liborender into sysroot
+        run: |
+          mkdir -p sysroot/usr/lib sysroot/usr/include sysroot/usr/lib/pkgconfig
+          rel=omniphony/omniphony-renderer/target/release
+          cp "$rel/liborender.so" sysroot/usr/lib/liborender.so.0
+          ln -sf liborender.so.0 sysroot/usr/lib/liborender.so
+          cp omniphony/omniphony-renderer/orender_ffi/include/orender.h sysroot/usr/include/orender.h
+          cat > sysroot/usr/lib/pkgconfig/orender.pc <<EOF
+          prefix=${{ github.workspace }}/sysroot/usr
+          libdir=\${prefix}/lib
+          includedir=\${prefix}/include
+
+          Name: orender
+          Description: Omniphony renderer C library
+          Version: 0.99.0
+          Libs: -L\${libdir} -lorender
+          Cflags: -I\${includedir}
+          EOF
+
+      - name: Apply orender + FEL patches onto mpv
+        run: |
+          out=$(bash scripts/apply-patches-fel.sh | tee /dev/stderr)
+          sha=$(echo "$out" | sed -n 's/^MPV_FEL_SHA=//p')
+          echo "MPV_DIR=build/mpv-master-$sha" >> "$GITHUB_ENV"
+
+      - name: Build mpv (linked against FEL prefix)
+        run: |
+          PREFIX="$GITHUB_WORKSPACE/fel-prefix"
+          # FEL prefix FIRST so its libplacebo/ffmpeg shadow the system ones.
+          export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:${{ github.workspace }}/sysroot/usr/lib/pkgconfig"
+          export LD_LIBRARY_PATH="$PREFIX/lib:${{ github.workspace }}/sysroot/usr/lib"
+          export PATH="$PREFIX/bin:$PATH"
+          cd "$MPV_DIR"
+          meson setup _b -Dorender=enabled
+          meson compile -C _b
+          echo "== mpv libplacebo linkage =="
+          ldd _b/mpv | grep -E 'libplacebo|libavcodec' || true
+          ldd _b/mpv | grep -q "$PREFIX/lib/libplacebo" \
+            || { echo "!! mpv did not link the FEL libplacebo in $PREFIX" >&2; exit 1; }
+
+      - name: Package (zip, bundling FEL libs)
+        run: |
+          PREFIX="$GITHUB_WORKSPACE/fel-prefix"
+          mkdir -p staging staging/lib staging/scripts
+          cp "$MPV_DIR/_b/mpv" staging/
+          cp sysroot/usr/lib/liborender.so.0 staging/lib/
+          cp sysroot/usr/include/orender.h staging/
+          cp runtime/omniphony-overlay.lua staging/scripts/
+          cp README.md staging/
+          # Bundle the FEL libplacebo/ffmpeg/libdovi next to the binary and make
+          # mpv find them via rpath, so the zip actually renders FEL (otherwise it
+          # silently falls back to base layer against system libs).
+          cp -P "$PREFIX"/lib/lib{placebo,dovi,av*,sw*}*.so* staging/lib/ 2>/dev/null || true
+          patchelf --set-rpath '$ORIGIN/lib' staging/mpv
+          cd staging
+          zip -r "../mpv-omniphony-fel-linux-x86_64.zip" .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mpv-omniphony-fel-linux-x86_64
+          path: mpv-omniphony-fel-linux-x86_64.zip
+
+  build-liborender-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout Omniphony (renderer source)
+        uses: actions/checkout@v4
+        with:
+          repository: mgth/Omniphony
+          ref: ${{ env.OMNIPHONY_REF }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build orender_ffi (release)
+        run: cargo build --release -p orender_ffi
+        working-directory: omniphony-renderer
+        env:
+          RUSTFLAGS: -D warnings
+
+      - name: Stage artifact
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          Copy-Item omniphony-renderer/target/release/orender.dll out/
+          Copy-Item omniphony-renderer/orender_ffi/include/orender.h out/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: liborender-windows-from-source-fel
+          path: out
+
+  build-windows:
+    needs: [resolve-dvfel, build-liborender-windows]
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bootstrap Arch + Martchus mingw-w64 repo
+        run: |
+          pacman-key --init
+          cat >> /etc/pacman.conf <<'EOF'
+
+          [ownstuff]
+          SigLevel = Optional TrustAll
+          Server = https://martchus.no-ip.biz/repo/arch/$repo/os/$arch
+          EOF
+          pacman -Syu --noconfirm
+
+      - name: Install MinGW toolchain + mpv/FEL build deps
+        run: |
+          pacman -S --noconfirm --needed \
+            base-devel git unzip zip curl rustup nasm \
+            mingw-w64-gcc \
+            mingw-w64-pkg-config \
+            mingw-w64-meson \
+            mingw-w64-libass \
+            mingw-w64-vulkan-headers mingw-w64-vulkan-icd-loader \
+            mingw-w64-shaderc mingw-w64-lcms2 mingw-w64-zlib
+          # We build our OWN libplacebo (dv-fel) + ffmpeg (dovi_split) into the
+          # MinGW sysroot below, so we intentionally do NOT install
+          # mingw-w64-libplacebo / mingw-w64-ffmpeg here.
+          rustup default stable
+          rustup target add x86_64-pc-windows-gnu
+
+      - name: Cache FEL dep prefix (MinGW sysroot libs)
+        id: felcache
+        uses: actions/cache@v4
+        with:
+          # Cache only the artefacts we install, not the whole sysroot.
+          path: |
+            /usr/x86_64-w64-mingw32/bin
+            /usr/x86_64-w64-mingw32/lib/pkgconfig
+            /usr/x86_64-w64-mingw32/lib/libplacebo*
+            /usr/x86_64-w64-mingw32/lib/libav*
+            /usr/x86_64-w64-mingw32/lib/libsw*
+            /usr/x86_64-w64-mingw32/lib/libdovi*
+            /usr/x86_64-w64-mingw32/include/libplacebo
+            /usr/x86_64-w64-mingw32/include/libav*
+          key: fel-mingw-${{ needs.resolve-dvfel.outputs.sha }}-${{ hashFiles('deps-fel/**') }}
+
+      - name: Write meson cross-file (x86_64-w64-mingw32)
+        run: |
+          mkdir -p sysroot
+          cat > sysroot/mingw-cross.ini <<'EOF'
+          [binaries]
+          c = 'x86_64-w64-mingw32-gcc'
+          cpp = 'x86_64-w64-mingw32-g++'
+          ar = 'x86_64-w64-mingw32-ar'
+          strip = 'x86_64-w64-mingw32-strip'
+          pkg-config = 'x86_64-w64-mingw32-pkg-config'
+          windres = 'x86_64-w64-mingw32-windres'
+
+          [host_machine]
+          system = 'windows'
+          cpu_family = 'x86_64'
+          cpu = 'x86_64'
+          endian = 'little'
+          EOF
+
+      - name: Build FEL deps into MinGW sysroot (cross)
+        if: steps.felcache.outputs.cache-hit != 'true'
+        run: |
+          # PREFIX = the MinGW sysroot: our dv-fel libplacebo + dovi_split ffmpeg
+          # shadow Martchus's, so the cross pkg-config and the DLL-walker both pick
+          # ours up with no further wiring.
+          PREFIX=/usr/x86_64-w64-mingw32 \
+          WORK="$GITHUB_WORKSPACE/fel-work" \
+          CROSS_FILE="$GITHUB_WORKSPACE/sysroot/mingw-cross.ini" \
+            bash scripts/build-fel-deps.sh --cross
+
+      - name: Verify FEL deps (cross)
+        run: |
+          x86_64-w64-mingw32-pkg-config --atleast-version=7.370 libplacebo
+          echo "libplacebo $(x86_64-w64-mingw32-pkg-config --modversion libplacebo)"
+          x86_64-w64-mingw32-pkg-config --exists dovi
+
+      - name: Build & install libsrt from source (ABI-matched to our libstdc++)
+        run: |
+          SYS=/usr/x86_64-w64-mingw32
+          pacman -S --noconfirm --needed mingw-w64-cmake mingw-w64-openssl
+          SRT_VER=1.5.5
+          curl -sLO "https://github.com/Haivision/srt/archive/refs/tags/v${SRT_VER}.tar.gz"
+          tar xzf "v${SRT_VER}.tar.gz"
+          cd "srt-${SRT_VER}"
+          mkdir build && cd build
+          x86_64-w64-mingw32-cmake .. \
+            -DENABLE_APPS=OFF -DENABLE_BONDING=OFF -DENABLE_STATIC=OFF \
+            -DENABLE_SHARED=ON -DCMAKE_INSTALL_PREFIX="$SYS"
+          cmake --build . -j"$(nproc)"
+          cmake --install .
+          if [ -f "$SYS/bin/srt.dll" ] && [ ! -f "$SYS/bin/libsrt.dll" ]; then
+            cp "$SYS/bin/srt.dll" "$SYS/bin/libsrt.dll"
+          fi
+
+      - name: Build & install Lua 5.2 (MinGW)
+        run: |
+          SYS=/usr/x86_64-w64-mingw32
+          LUA_VER=5.2.4
+          curl -sLO "https://www.lua.org/ftp/lua-${LUA_VER}.tar.gz"
+          tar xzf "lua-${LUA_VER}.tar.gz"
+          cd "lua-${LUA_VER}"
+          make PLAT=mingw CC=x86_64-w64-mingw32-gcc \
+            AR="x86_64-w64-mingw32-ar rcu" RANLIB=x86_64-w64-mingw32-ranlib mingw
+          install -Dm755 src/lua52.dll "$SYS/bin/lua52.dll"
+          install -Dm644 src/liblua.a  "$SYS/lib/liblua52.a"
+          for h in lua lualib lauxlib luaconf; do install -Dm644 "src/$h.h" "$SYS/include/$h.h"; done
+          install -d "$SYS/lib/pkgconfig"
+          cat > "$SYS/lib/pkgconfig/lua52.pc" <<EOF
+          prefix=$SYS
+          libdir=\${prefix}/lib
+          includedir=\${prefix}/include
+
+          Name: Lua
+          Description: Lua 5.2 (MinGW cross build)
+          Version: ${LUA_VER}
+          Libs: -L\${libdir} -llua52
+          Cflags: -I\${includedir}
+          EOF
+
+      - name: Download liborender (built from source)
+        uses: actions/download-artifact@v4
+        with:
+          name: liborender-windows-from-source-fel
+          path: /tmp/liborender
+
+      - name: Install liborender into MinGW sysroot
+        run: |
+          SYS=/usr/x86_64-w64-mingw32
+          install -Dm755 /tmp/liborender/orender.dll "$SYS/bin/orender.dll"
+          install -Dm644 /tmp/liborender/orender.h   "$SYS/include/orender.h"
+          install -Dm755 /tmp/liborender/orender.dll "$SYS/lib/orender.dll"
+          install -d "$SYS/lib/pkgconfig"
+          cat > "$SYS/lib/pkgconfig/orender.pc" <<EOF
+          prefix=$SYS
+          libdir=\${prefix}/lib
+          includedir=\${prefix}/include
+
+          Name: orender
+          Description: Omniphony renderer C library
+          Version: 0.99.0
+          Libs: -L\${libdir} -lorender
+          Cflags: -I\${includedir}
+          EOF
+
+      - name: Apply orender + FEL patches onto mpv
+        run: |
+          out=$(bash scripts/apply-patches-fel.sh | tee /dev/stderr)
+          sha=$(echo "$out" | sed -n 's/^MPV_FEL_SHA=//p')
+          echo "MPV_DIR=build/mpv-master-$sha" >> "$GITHUB_ENV"
+
+      - name: Cross-compile mpv (MinGW, linked against FEL sysroot)
+        run: |
+          cd "$MPV_DIR"
+          meson setup _b \
+            --cross-file="$GITHUB_WORKSPACE/sysroot/mingw-cross.ini" \
+            -Dorender=enabled -Dlua=lua52 -Dasio=enabled
+          meson compile -C _b
+
+      - name: Package (zip, DLL-walker bundles FEL DLLs from sysroot)
+        shell: bash
+        run: |
+          SYS=/usr/x86_64-w64-mingw32
+          mkdir -p staging staging/scripts
+          cp "$MPV_DIR/_b/mpv.exe" staging/
+          cp "$MPV_DIR/_b/mpv.com" staging/
+          cp runtime/omniphony-overlay.lua staging/scripts/
+          cp "$SYS/bin/orender.dll" staging/
+          cp "$SYS/include/orender.h" staging/
+          cp README.md staging/
+          should_skip() {
+            case "$1" in
+              KERNEL32.*|USER32.*|GDI32.*|ADVAPI32.*|MSVCRT.*|SHELL32.*|ole32.*|OLEAUT32.*|WS2_32.*|IMM32.*|VERSION.*|WINMM.*|d3d*|dxgi*|opengl32.*|setupapi.*|RPCRT4.*|bcrypt.*|CRYPT32.*|comdlg32.*|netapi32.*|powrprof.*|psapi.*|userenv.*|wininet.*|wintrust.*|comctl32.*|iphlpapi.*|secur32.*|uxtheme.*|dwmapi.*|crypt32.*|ncrypt.*|dnsapi.*|mpr.*|mswsock.*|odbc32.*|odbccp32.*|VCRUNTIME*|api-ms-*)
+                return 0 ;;
+            esac
+            return 1
+          }
+          worklist=(staging/mpv.exe)
+          while [ ${#worklist[@]} -gt 0 ]; do
+            exe="${worklist[0]}"; worklist=("${worklist[@]:1}")
+            for dll in $(x86_64-w64-mingw32-objdump -p "$exe" 2>/dev/null | awk '/DLL Name:/ {print $3}'); do
+              should_skip "$dll" && continue
+              [ -f "staging/$dll" ] && continue
+              if [ -f "$SYS/bin/$dll" ]; then
+                cp "$SYS/bin/$dll" staging/; worklist+=("staging/$dll"); echo "  + $dll"
+              else
+                echo "  ! NOT FOUND: $dll"
+              fi
+            done
+          done
+          for dll in libstdc++-6.dll libgcc_s_seh-1.dll libwinpthread-1.dll; do
+            [ -f "$SYS/bin/$dll" ] && [ ! -f "staging/$dll" ] && cp "$SYS/bin/$dll" staging/ && echo "  + $dll (forced)"
+          done
+          ls -la staging/
+          cd staging && zip -r "../mpv-omniphony-fel-windows-x86_64.zip" .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mpv-omniphony-fel-windows-x86_64
+          path: mpv-omniphony-fel-windows-x86_64.zip
