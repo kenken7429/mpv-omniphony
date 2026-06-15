@@ -222,6 +222,18 @@ jobs:
           rustup default stable
           rustup target add x86_64-pc-windows-gnu
 
+      - name: Install prebuilt cargo-c
+        run: |
+          # Use the prebuilt cargo-c binary instead of `cargo install cargo-c`:
+          # building it from source drags in libz-sys/libnghttp2-sys HOST C builds
+          # that fail to assemble in this container. (The Arch cargo-c package
+          # would pull `rust`, which conflicts with rustup.) build-fel-deps.sh then
+          # skips its own `cargo install` since cargo-cinstall is on PATH.
+          CARGOC_VER=0.10.23
+          curl -sL "https://github.com/lu-zero/cargo-c/releases/download/v${CARGOC_VER}/cargo-c-x86_64-unknown-linux-musl.tar.gz" \
+            | tar -xz -C /usr/local/bin cargo-capi cargo-cbuild cargo-cinstall cargo-ctest
+          command -v cargo-cinstall
+
       - name: Cache FEL dep prefix (MinGW sysroot libs)
         id: felcache
         uses: actions/cache@v4
