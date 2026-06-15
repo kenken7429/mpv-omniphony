@@ -72,6 +72,15 @@ else
     if [ "$CROSS" = 1 ]; then
         rustup target add "$RUST_TARGET" >/dev/null 2>&1 || true
         capi_args+=(--target "$RUST_TARGET")
+        # Point the cc crate and cargo's linker at the MinGW toolchain for the
+        # target, else transitive C deps (e.g. libz-sys) get built with the host
+        # compiler and the assembler rejects the host asm ('.hidden' etc.).
+        rt_lc="$(printf '%s' "$RUST_TARGET" | tr 'A-Z-' 'a-z_')"
+        rt_uc="$(printf '%s' "$RUST_TARGET" | tr 'a-z-' 'A-Z_')"
+        export "CC_${rt_lc}=${CROSS_PREFIX}gcc"
+        export "CXX_${rt_lc}=${CROSS_PREFIX}g++"
+        export "AR_${rt_lc}=${CROSS_PREFIX}ar"
+        export "CARGO_TARGET_${rt_uc}_LINKER=${CROSS_PREFIX}gcc"
     fi
     ( cd "$WORK/dovi_tool/dolby_vision" && cargo cinstall "${capi_args[@]}" )
 fi
@@ -89,7 +98,10 @@ else
 fi
 PLACEBO_SHA="$(git -C "$WORK/libplacebo" rev-parse --short HEAD)"
 
-pl_args=(--prefix="$PREFIX" --buildtype=release
+# Force --libdir=lib so the .pc lands in $PREFIX/lib/pkgconfig everywhere;
+# Ubuntu/Debian meson otherwise defaults to a multiarch lib/<triplet> dir that
+# our PKG_CONFIG_PATH ($PREFIX/lib/pkgconfig) would miss.
+pl_args=(--prefix="$PREFIX" --libdir=lib --buildtype=release
          -Dvulkan=enabled -Dshaderc=enabled -Dlcms=enabled
          -Ddovi=enabled -Dlibdovi=enabled -Ddemos=false)
 [ "$CROSS" = 1 ] && pl_args+=(--cross-file="$CROSS_FILE")
