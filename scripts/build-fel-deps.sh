@@ -42,7 +42,11 @@ RUST_TARGET="${RUST_TARGET:-x86_64-pc-windows-gnu}"
 # pkg-config the rest of the build will consult; our $PREFIX must win so the
 # dv-fel libplacebo shadows any system/Martchus libplacebo (the classic FEL trap).
 export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
-export PATH="$PREFIX/bin:$PATH"
+# Only put $PREFIX/bin on PATH in native mode (to run the freshly built ffmpeg
+# for the dovi_split check). In cross mode $PREFIX is the MinGW sysroot, whose
+# bin holds Windows target binaries/DLLs; prepending it breaks ffmpeg's *host*
+# compiler detection ("Host compiler lacks C11 support").
+[ "${CROSS:-0}" = 0 ] && export PATH="$PREFIX/bin:$PATH"
 
 mkdir -p "$WORK" "$PREFIX"
 log(){ printf '\n>> %s\n' "$*"; }
