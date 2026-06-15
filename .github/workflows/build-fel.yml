@@ -261,6 +261,9 @@ jobs:
           strip = 'x86_64-w64-mingw32-strip'
           pkg-config = 'x86_64-w64-mingw32-pkg-config'
           windres = 'x86_64-w64-mingw32-windres'
+          # libplacebo (dv-fel HEAD) builds a Windows import lib and needs a
+          # dlltool; meson only probes unprefixed llvm-dlltool/dlltool otherwise.
+          dlltool = 'x86_64-w64-mingw32-dlltool'
 
           [host_machine]
           system = 'windows'
