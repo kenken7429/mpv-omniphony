@@ -131,9 +131,21 @@ fi
 make -C "$WORK/ffmpeg" -j"$JOBS"
 make -C "$WORK/ffmpeg" install
 
-PATH="$PREFIX/bin:$PATH" "${PREFIX}/bin/ffmpeg" -hide_banner -bsfs 2>/dev/null | grep -q dovi_split \
-    || { echo "!! dovi_split BSF missing from built ffmpeg" >&2; exit 1; }
-log "ffmpeg OK (dovi_split present)"
+# Run the freshly built ffmpeg CLI against ITS OWN libavcodec (LD_LIBRARY_PATH),
+# not whatever libavcodec happens to be on the system loader path — otherwise the
+# check silently inspects the wrong (dovi_split-less) library. Native only; under
+# cross there is no runnable host ffmpeg, so we trust the configure/compile of the
+# BSF instead.
+if [ "$CROSS" = 0 ]; then
+    LD_LIBRARY_PATH="$PREFIX/lib:${LD_LIBRARY_PATH:-}" \
+        "${PREFIX}/bin/ffmpeg" -hide_banner -bsfs 2>/dev/null | grep -q dovi_split \
+        || { echo "!! dovi_split BSF missing from built ffmpeg" >&2; exit 1; }
+    log "ffmpeg OK (dovi_split present)"
+else
+    grep -q dovi_split "$WORK/ffmpeg/libavcodec/bitstream_filters.c" \
+        || { echo "!! dovi_split not registered in cross ffmpeg" >&2; exit 1; }
+    log "ffmpeg cross-built (dovi_split registered)"
+fi
 
 cat <<EOF
 

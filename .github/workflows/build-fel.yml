@@ -75,6 +75,9 @@ jobs:
         run: |
           export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/fel-prefix/lib/pkgconfig:$PKG_CONFIG_PATH"
           export PATH="$GITHUB_WORKSPACE/fel-prefix/bin:$PATH"
+          # ffmpeg CLI must load OUR libavcodec, not a system one (the job installs
+          # no libav*-dev), so put the prefix on the loader path.
+          export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/fel-prefix/lib:${LD_LIBRARY_PATH:-}"
           pkg-config --atleast-version=7.370 libplacebo
           echo "libplacebo $(pkg-config --modversion libplacebo)"
           ffmpeg -hide_banner -bsfs | grep -q dovi_split
