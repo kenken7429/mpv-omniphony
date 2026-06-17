@@ -21,7 +21,7 @@ env:
   # construction, and removes the stale-prebuilt skew that made mpv silently
   # ship an old liborender (config parsed differently → default room). Bump
   # this one line on each release.
-  OMNIPHONY_REF: v0.3.3
+  OMNIPHONY_REF: v0.4.0
 
 jobs:
   build-linux:
@@ -90,17 +90,14 @@ jobs:
 
       - name: Package (zip)
         run: |
-          mkdir -p staging staging/scripts
+          mkdir -p staging
           cp "build/mpv-${MPV_TAG}/_b/mpv" staging/
           cp sysroot/usr/lib/liborender.so.0 staging/
           cp sysroot/usr/include/orender.h staging/
           cp README.md staging/
-          # Live overlay lua (drop into ~/.config/mpv/scripts/ on a user
-          # install; see the README's "Live overlay" section).
-          cp runtime/omniphony-overlay.lua staging/scripts/
           cd staging
           zip -r "../mpv-omniphony-${GITHUB_REF_NAME}-linux-x86_64.zip" \
-            mpv liborender.so.0 orender.h README.md scripts
+            mpv liborender.so.0 orender.h README.md
 
       - uses: actions/upload-artifact@v4
         with:
@@ -327,11 +324,8 @@ jobs:
       - name: Package (zip)
         run: |
           SYS=/usr/x86_64-w64-mingw32
-          mkdir -p staging staging/scripts
+          mkdir -p staging
           cp "build/mpv-${MPV_TAG}/_b/mpv.exe" staging/
-          # Live overlay lua (drop into %APPDATA%\mpv\scripts\ on a user
-          # install; see the README's "Live overlay" section).
-          cp runtime/omniphony-overlay.lua staging/scripts/
           # mpv.com is the console-subsystem wrapper that exposes stdout/stderr;
           # cmd.exe resolves `mpv` to mpv.com first (PATHEXT priority), so logs
           # show up when launched from a console. Without it, mpv.exe runs
@@ -418,8 +412,14 @@ jobs:
             spatial audio decoder.
 
             **What's in each archive:** `mpv` (or `mpv.exe`), `liborender.so.0` /
-            `orender.dll`, `orender.h`, the live-overlay `scripts/` directory,
-            plus the bundled MinGW runtime DLLs on Windows.
+            `orender.dll`, `orender.h`, plus the bundled MinGW runtime DLLs on
+            Windows. The live overlay is built into mpv itself — no script to
+            install.
+
+            **Upgrading?** The overlay is now built in: delete any
+            `omniphony-overlay.lua` you previously copied into your mpv
+            `scripts/` directory. A leftover copy is harmless (it self-disables
+            on these PUC-Lua builds), but it is no longer needed.
 
             **NOT bundled:** the decoder bridge plugin
             (`omniphony_bridge.so` / `.dll`). Licensing constraints on the

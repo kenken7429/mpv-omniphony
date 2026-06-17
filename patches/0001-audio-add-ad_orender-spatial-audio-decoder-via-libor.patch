@@ -1,8 +1,8 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Mathieu GRENET <mathieu@mgth.fr>
 Date: Tue, 26 May 2026 12:48:20 +0200
-Subject: [PATCH 1/7] =?UTF-8?q?audio:=20add=20ad=5Forender=20=E2=80=94=20s?=
- =?UTF-8?q?patial=20audio=20decoder=20via=20liborender?=
+Subject: [PATCH 01/17] =?UTF-8?q?audio:=20add=20ad=5Forender=20=E2=80=94?=
+ =?UTF-8?q?=20spatial=20audio=20decoder=20via=20liborender?=
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -44,7 +44,7 @@ new file mode 100644
 index 0000000000..e0002cfb38
 --- /dev/null
 +++ b/audio/decode/ad_orender.c
-@@ -0,0 +1,358 @@
+@@ -0,0 +1,348 @@
 +/*
 + * ad_orender.c — mpv audio decoder that renders spatial audio through liborender.
 + *
@@ -367,19 +367,9 @@ index 0000000000..e0002cfb38
 +
 +    p->renderer = orender_create(&cfg);
 +    if (!p->renderer) {
-+        /* liborender resolves the config per-OS (see
-+         * renderer/src/config.rs::default_config_path): %APPDATA% on
-+         * Windows, $XDG_CONFIG_HOME (or ~/.config) elsewhere. Match its
-+         * convention in the user-facing hint. */
-+#ifdef _WIN32
-+        MP_ERR(da, "orender_create failed — set render.bridge_path in your "
-+                   "omniphony config (%%APPDATA%%\\omniphony\\config.yaml); "
-+                   "see stderr for the liborender error\n");
-+#else
 +        MP_ERR(da, "orender_create failed — set render.bridge_path in your "
 +                   "omniphony config (~/.config/omniphony/config.yaml); see "
 +                   "stderr for the liborender error\n");
-+#endif
 +        talloc_free(da);
 +        return NULL;
 +    }
