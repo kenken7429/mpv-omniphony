@@ -16,6 +16,9 @@ on:
   schedule:
     - cron: '0 7 * * 1' # weekly, Monday 07:00 UTC
   push:
+    # Tag a FEL beta (e.g. v0.4.0-fel-beta.1) to build AND publish a pre-release.
+    tags:
+      - 'v*-fel*'
     paths:
       - 'patches-fel/**'
       - 'deps-fel/**'
@@ -24,7 +27,9 @@ on:
       - '.github/workflows/build-fel.yml'
 
 env:
-  OMNIPHONY_REF: main
+  # Rolling (cron/dispatch/path-push) builds track Omniphony main; a tagged FEL
+  # beta pins liborender to the matching release line for reproducibility.
+  OMNIPHONY_REF: ${{ startsWith(github.ref, 'refs/tags/') && 'v0.4.0' || 'main' }}
 
 jobs:
   # Resolve the live dv-fel HEAD once so both platforms key their caches on the
@@ -412,3 +417,39 @@ jobs:
         with:
           name: mpv-omniphony-fel-windows-x86_64
           path: mpv-omniphony-fel-windows-x86_64.zip
+
+  # Publish a pre-release only for a FEL beta tag (e.g. v0.4.0-fel-beta.1).
+  # Mirrors integration-build.yml's publish job, but keyed on the pushed tag.
+  # Skipped for cron/dispatch/path-push runs (those just upload CI artifacts).
+  publish-fel-beta:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [build-linux, build-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: mpv-omniphony-fel-linux-x86_64
+      - uses: actions/download-artifact@v4
+        with:
+          name: mpv-omniphony-fel-windows-x86_64
+
+      - name: Publish FEL beta pre-release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: 'mpv-omniphony ${{ github.ref_name }} (Dolby Vision FEL beta)'
+          prerelease: true
+          make_latest: false
+          body: |
+            Experimental **Dolby Vision Profile 7 FEL** build of mpv-omniphony.
+            Built on mpv **master** (master-tracking patch flow) with liborender
+            from Omniphony `${{ env.OMNIPHONY_REF }}`. **Beta — NOT a stable release.**
+
+            **NOT bundled:** the decoder bridge plugin (`*_bridge.dll` / `.so`).
+            Provide it via `--ad-orender-bridge-path=<absolute path>` or drop it
+            next to `mpv(.exe)`.
+          files: |
+            mpv-omniphony-fel-linux-x86_64.zip
+            mpv-omniphony-fel-windows-x86_64.zip
