@@ -24,7 +24,7 @@ env:
   # construction, and removes the stale-prebuilt skew that made mpv silently
   # ship an old liborender (config parsed differently → default room). Bump
   # this one line on each release.
-  OMNIPHONY_REF: v0.4.0
+  OMNIPHONY_REF: v0.4.1-beta.1
 
 jobs:
   build-linux:
