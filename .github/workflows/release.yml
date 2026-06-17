@@ -11,6 +11,9 @@ on:
   push:
     tags:
       - 'v*'
+      # FEL beta tags (e.g. v0.4.0-fel-beta.1) are built + published by
+      # build-fel.yml on the master track; keep them off the stable release.
+      - '!*-fel*'
   workflow_dispatch:
 
 env:
