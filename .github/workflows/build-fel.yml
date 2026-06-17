@@ -143,11 +143,10 @@ jobs:
       - name: Package (zip, bundling FEL libs)
         run: |
           PREFIX="$GITHUB_WORKSPACE/fel-prefix"
-          mkdir -p staging staging/lib staging/scripts
+          mkdir -p staging staging/lib
           cp "$MPV_DIR/_b/mpv" staging/
           cp sysroot/usr/lib/liborender.so.0 staging/lib/
           cp sysroot/usr/include/orender.h staging/
-          cp runtime/omniphony-overlay.lua staging/scripts/
           cp README.md staging/
           # Bundle the FEL libplacebo/ffmpeg/libdovi next to the binary and make
           # mpv find them via rpath, so the zip actually renders FEL (otherwise it
@@ -380,10 +379,9 @@ jobs:
         shell: bash
         run: |
           SYS=/usr/x86_64-w64-mingw32
-          mkdir -p staging staging/scripts
+          mkdir -p staging
           cp "$MPV_DIR/_b/mpv.exe" staging/
           cp "$MPV_DIR/_b/mpv.com" staging/
-          cp runtime/omniphony-overlay.lua staging/scripts/
           cp "$SYS/bin/orender.dll" staging/
           cp "$SYS/include/orender.h" staging/
           cp README.md staging/
