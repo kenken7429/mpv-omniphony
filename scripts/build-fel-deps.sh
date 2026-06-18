@@ -108,7 +108,9 @@ PLACEBO_SHA="$(git -C "$WORK/libplacebo" rev-parse --short HEAD)"
 pl_args=(--prefix="$PREFIX" --libdir=lib --buildtype=release
          -Dvulkan=enabled -Dshaderc=enabled -Dlcms=enabled
          -Ddovi=enabled -Dlibdovi=enabled -Ddemos=false)
-[ "$CROSS" = 1 ] && pl_args+=(--cross-file="$CROSS_FILE")
+# d3d11 (Windows only) needs spirv-cross for SPIR-V→HLSL; without it libplacebo
+# builds d3d11 stubs and mpv's --gpu-api/--gpu-context=d3d11 is unavailable.
+[ "$CROSS" = 1 ] && pl_args+=(--cross-file="$CROSS_FILE" -Dd3d11=enabled)
 
 rm -rf "$WORK/libplacebo/build"
 meson setup "$WORK/libplacebo/build" "$WORK/libplacebo" "${pl_args[@]}"

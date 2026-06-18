@@ -219,7 +219,7 @@ jobs:
             mingw-w64-meson \
             mingw-w64-libass \
             mingw-w64-vulkan-headers mingw-w64-vulkan-icd-loader \
-            mingw-w64-shaderc mingw-w64-lcms2 mingw-w64-zlib
+            mingw-w64-shaderc mingw-w64-spirv-cross mingw-w64-lcms2 mingw-w64-zlib
           # We build our OWN libplacebo (dv-fel) + ffmpeg (dovi_split) into the
           # MinGW sysroot below, so we intentionally do NOT install
           # mingw-w64-libplacebo / mingw-w64-ffmpeg here.
@@ -372,7 +372,7 @@ jobs:
           cd "$MPV_DIR"
           meson setup _b \
             --cross-file="$GITHUB_WORKSPACE/sysroot/mingw-cross.ini" \
-            -Dorender=enabled -Dlua=lua52 -Dasio=enabled
+            -Dorender=enabled -Dlua=lua52 -Dasio=enabled -Dd3d11=enabled
           meson compile -C _b
 
       - name: Package (zip, DLL-walker bundles FEL DLLs from sysroot)
