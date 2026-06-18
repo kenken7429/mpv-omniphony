@@ -68,7 +68,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: fel-prefix
-          key: fel-linux-${{ needs.resolve-dvfel.outputs.sha }}-${{ hashFiles('deps-fel/**') }}
+          key: fel-linux-${{ needs.resolve-dvfel.outputs.sha }}-${{ hashFiles('deps-fel/**', 'scripts/build-fel-deps.sh') }}
 
       - name: Build FEL deps (libdovi + libplacebo dv-fel + ffmpeg dovi_split)
         if: steps.felcache.outputs.cache-hit != 'true'
@@ -252,7 +252,7 @@ jobs:
             /usr/x86_64-w64-mingw32/lib/libdovi*
             /usr/x86_64-w64-mingw32/include/libplacebo
             /usr/x86_64-w64-mingw32/include/libav*
-          key: fel-mingw-${{ needs.resolve-dvfel.outputs.sha }}-${{ hashFiles('deps-fel/**') }}
+          key: fel-mingw-${{ needs.resolve-dvfel.outputs.sha }}-${{ hashFiles('deps-fel/**', 'scripts/build-fel-deps.sh') }}
 
       - name: Write meson cross-file (x86_64-w64-mingw32)
         run: |
