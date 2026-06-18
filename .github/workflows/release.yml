@@ -173,7 +173,8 @@ jobs:
             mingw-w64-meson \
             mingw-w64-ffmpeg \
             mingw-w64-libplacebo \
-            mingw-w64-libass
+            mingw-w64-libass \
+            mingw-w64-spirv-cross
 
       - name: Build & install libsrt from source (ABI-matched to our libstdc++)
         run: |
@@ -321,7 +322,8 @@ jobs:
             --cross-file="$GITHUB_WORKSPACE/sysroot/mingw-cross.ini" \
             -Dorender=enabled \
             -Dlua=lua52 \
-            -Dasio=enabled
+            -Dasio=enabled \
+            -Dd3d11=enabled
           meson compile -C _b
 
       - name: Package (zip)
