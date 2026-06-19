@@ -160,6 +160,11 @@ if [ "$CROSS" = 1 ]; then
     ff_args+=(--enable-cross-compile --cross-prefix="$CROSS_PREFIX"
               --arch=x86_64 --target-os=mingw32
               --pkg-config="$PKGCONFIG")
+else
+    # Native (Linux): AMD/Intel hwdec (VA-API) + Vulkan video decode (ffmpeg
+    # 8.1 supports it; needs libva/libvulkan at configure time). Windows uses
+    # D3D11VA / nvdec instead, so these are native-only.
+    ff_args+=(--enable-vaapi --enable-vulkan)
 fi
 ( cd "$WORK/ffmpeg" && ./configure "${ff_args[@]}" )
 make -C "$WORK/ffmpeg" -j"$JOBS"

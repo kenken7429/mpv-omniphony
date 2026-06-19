@@ -58,7 +58,8 @@ jobs:
           sudo apt-get install -y \
             meson ninja-build pkg-config gcc nasm git patchelf zlib1g-dev \
             libass-dev liblua5.2-dev libx11-dev \
-            libvulkan-dev libshaderc-dev glslang-dev liblcms2-dev
+            libvulkan-dev libshaderc-dev glslang-dev liblcms2-dev \
+            libva-dev libdrm-dev
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -133,9 +134,14 @@ jobs:
           export LD_LIBRARY_PATH="$PREFIX/lib:${{ github.workspace }}/sysroot/usr/lib"
           export PATH="$PREFIX/bin:$PATH"
           cd "$MPV_DIR"
-          # cuda-hwaccel/-interop forced on: the FEL ffmpeg above is built with
-          # ffnvcodec, so NVIDIA decode is functional, not just compiled in.
-          meson setup _b -Dorender=enabled -Dcuda-hwaccel=enabled -Dcuda-interop=enabled
+          # Hardware decoding forced on, all functional because the FEL ffmpeg
+          # above is built with the matching support:
+          #   cuda-hwaccel/-interop -> NVIDIA (ffnvcodec)
+          #   vaapi                 -> AMD/Intel (VA-API)
+          #   vulkan                -> Vulkan video decode (ffmpeg 8.1, vendor-neutral)
+          meson setup _b -Dorender=enabled \
+            -Dcuda-hwaccel=enabled -Dcuda-interop=enabled \
+            -Dvaapi=enabled -Dvulkan=enabled
           meson compile -C _b
           echo "== mpv libplacebo linkage =="
           ldd _b/mpv | grep -E 'libplacebo|libavcodec' || true
