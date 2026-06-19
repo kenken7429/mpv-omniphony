@@ -115,6 +115,7 @@ struct priv {
     int channels;
     struct mp_chmap chmap;
     bool checked_spatial;       // built the output chmap for the spatial path
+    int last_mapping;           // last orender_channel_mapping() the chmap was built for (live switch)
     bool force_host;            // engine unusable (no layout / create failed): always native
     int host_decoder_idx;       // HOST_DEC_LAVC (PCM) or HOST_DEC_SPDIF (passthrough)
     struct mp_decoder *native;  // lazily-created native child decoder for host mode
@@ -275,6 +276,15 @@ static bool build_chmap(struct priv *p)
         p->chmap = (struct mp_chmap){0};
         return false;
     }
+    /* By-index mapping (the renderer default): a positionless chmap so mpv and
+     * the AO pass channels straight through by index — output port N carries
+     * layout speaker N, matching a custom rig wired in layout order. Only
+     * by-name (1) builds a positional map so a position-aware sink routes by
+     * speaker; <0 (error) also falls back to positionless. */
+    if (orender_channel_mapping(p->renderer) != 1) {
+        mp_chmap_set_unknown(&p->chmap, n);
+        return true;
+    }
     p->chmap = (struct mp_chmap){0};
     p->chmap.num = n;
     bool ok = true;
@@ -421,6 +431,7 @@ static void process_spatial(struct mp_filter *da, struct priv *p)
      * frame (AC-3/DTS need several packets to acquire sync). */
     if (!p->checked_spatial) {
         p->checked_spatial = true;
+        p->last_mapping = orender_channel_mapping(p->renderer);
         if (!build_chmap(p)) {
             if (p->chmap.num == 0) {
                 /* The renderer reported no output channels (e.g. the speaker
@@ -454,6 +465,20 @@ static void process_spatial(struct mp_filter *da, struct priv *p)
             MP_ERR(da, "channel count %u does not match output layout (%d); "
                        "dropping frame\n", n_ch, p->chmap.num);
             goto done;
+        }
+    }
+
+    /* Live by-index/by-name switch: same channel count, but the chmap flips
+     * between positionless (by_index) and positional (by_name). The count check
+     * above misses it, so poll the mapping and rebuild on change — the new chmap
+     * set on the frame below makes mpv's filter chain reconfigure the output. */
+    {
+        int cur_mapping = orender_channel_mapping(p->renderer);
+        if (cur_mapping != p->last_mapping) {
+            MP_VERBOSE(da, "output channel mapping changed (%d -> %d); rebuilding chmap\n",
+                       p->last_mapping, cur_mapping);
+            build_chmap(p);
+            p->last_mapping = cur_mapping;
         }
     }
 
