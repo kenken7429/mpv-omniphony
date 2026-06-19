@@ -164,10 +164,10 @@ index 4c2c7552b9..4eef87b7ed 100644
      codec->codec_desc = is_eac3 ? "eac3 (orender, spatial)"
                                  : "truehd (orender, spatial)";
 diff --git a/filters/f_decoder_wrapper.c b/filters/f_decoder_wrapper.c
-index 4c56690e10..eff8f4a8de 100644
+index fc9ee68144..1061c1cd0c 100644
 --- a/filters/f_decoder_wrapper.c
 +++ b/filters/f_decoder_wrapper.c
-@@ -191,6 +191,11 @@ struct priv {
+@@ -192,6 +192,11 @@ struct priv {
  
      int packets_without_output; // number packets sent without frame received
  
@@ -179,7 +179,7 @@ index 4c56690e10..eff8f4a8de 100644
      // Final PTS of previously decoded frame
      double pts;
  
-@@ -460,7 +465,7 @@ static bool reinit_decoder(struct priv *p)
+@@ -483,7 +488,7 @@ static bool reinit_decoder(struct priv *p)
          // (AF_FORMAT_FLOAT), so the native resampler / audio filter chain still
          // applies. Gated on the explicit decoder name so default playback is
          // unaffected.
@@ -188,7 +188,7 @@ index 4c56690e10..eff8f4a8de 100644
              (strcmp(p->codec->codec, "truehd") == 0 ||
               strcmp(p->codec->codec, "eac3") == 0) &&
              decoder_list_has(user_list, "orender"))
-@@ -475,6 +480,7 @@ static bool reinit_decoder(struct priv *p)
+@@ -498,6 +503,7 @@ static bool reinit_decoder(struct priv *p)
                  talloc_free(ol);
              }
          }
@@ -196,7 +196,7 @@ index 4c56690e10..eff8f4a8de 100644
  #endif
      }
  
-@@ -1063,8 +1069,28 @@ static void read_frame(struct priv *p)
+@@ -1109,8 +1115,28 @@ static void read_frame(struct priv *p)
      p->reverse_queue_complete = false;
  
      frame = mp_pin_out_read(p->decoder->f->pins[1]);
