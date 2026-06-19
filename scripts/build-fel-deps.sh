@@ -124,6 +124,21 @@ log "libplacebo $pl_ver installed (sha=$PLACEBO_SHA)"
     echo "!! libplacebo $pl_ver lacks the FEL API (need >= 7.370 / PL_API_VER 367)" >&2; exit 1; }
 
 # ---------------------------------------------------------------------------
+# 2b. nv-codec-headers (ffnvcodec) — lets the ffmpeg below build NVIDIA nvdec/
+#     cuvid and lets the mpv build's cuda-hwaccel configure. Header-only;
+#     nvcuda/nvcuvid are dlopen'd at runtime, so no CUDA SDK is needed and the
+#     cross build works the same. Installs ffnvcodec.pc into $PREFIX/lib/pkgconfig
+#     (already first on PKG_CONFIG_PATH).
+# ---------------------------------------------------------------------------
+NVCODEC_REF=n13.0.19.0
+log "nv-codec-headers $NVCODEC_REF"
+if [ ! -d "$WORK/nv-codec-headers/.git" ]; then
+    git clone --depth 1 --branch "$NVCODEC_REF" \
+        https://github.com/FFmpeg/nv-codec-headers "$WORK/nv-codec-headers"
+fi
+make -C "$WORK/nv-codec-headers" install PREFIX="$PREFIX"
+
+# ---------------------------------------------------------------------------
 # 3. ffmpeg + dovi_split BSF (vendored patch).
 # ---------------------------------------------------------------------------
 log "ffmpeg $FFMPEG_REF + dovi_split"
@@ -139,7 +154,8 @@ for p in "$FFMPEG_PATCHES_DIR"/*.patch; do
 done
 
 ff_args=(--prefix="$PREFIX" --enable-shared --disable-static
-         --enable-gpl --enable-version3 --disable-doc)
+         --enable-gpl --enable-version3 --disable-doc
+         --enable-ffnvcodec --enable-nvdec --enable-cuvid)
 if [ "$CROSS" = 1 ]; then
     ff_args+=(--enable-cross-compile --cross-prefix="$CROSS_PREFIX"
               --arch=x86_64 --target-os=mingw32
