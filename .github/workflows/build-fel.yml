@@ -133,7 +133,9 @@ jobs:
           export LD_LIBRARY_PATH="$PREFIX/lib:${{ github.workspace }}/sysroot/usr/lib"
           export PATH="$PREFIX/bin:$PATH"
           cd "$MPV_DIR"
-          meson setup _b -Dorender=enabled
+          # cuda-hwaccel/-interop forced on: the FEL ffmpeg above is built with
+          # ffnvcodec, so NVIDIA decode is functional, not just compiled in.
+          meson setup _b -Dorender=enabled -Dcuda-hwaccel=enabled -Dcuda-interop=enabled
           meson compile -C _b
           echo "== mpv libplacebo linkage =="
           ldd _b/mpv | grep -E 'libplacebo|libavcodec' || true
@@ -252,6 +254,7 @@ jobs:
             /usr/x86_64-w64-mingw32/lib/libdovi*
             /usr/x86_64-w64-mingw32/include/libplacebo
             /usr/x86_64-w64-mingw32/include/libav*
+            /usr/x86_64-w64-mingw32/include/ffnvcodec
           key: fel-mingw-${{ needs.resolve-dvfel.outputs.sha }}-${{ hashFiles('deps-fel/**', 'scripts/build-fel-deps.sh') }}
 
       - name: Write meson cross-file (x86_64-w64-mingw32)
@@ -370,9 +373,11 @@ jobs:
       - name: Cross-compile mpv (MinGW, linked against FEL sysroot)
         run: |
           cd "$MPV_DIR"
+          # cuda-hwaccel forced on (FEL ffmpeg + nv-codec-headers provide nvdec);
+          # cuda-interop left at auto for the MinGW GL/D3D interop path.
           meson setup _b \
             --cross-file="$GITHUB_WORKSPACE/sysroot/mingw-cross.ini" \
-            -Dorender=enabled -Dlua=lua52 -Dasio=enabled -Dd3d11=enabled
+            -Dorender=enabled -Dlua=lua52 -Dasio=enabled -Dd3d11=enabled -Dcuda-hwaccel=enabled
           meson compile -C _b
 
       - name: Package (zip, DLL-walker bundles FEL DLLs from sysroot)
