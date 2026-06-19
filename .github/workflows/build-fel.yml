@@ -29,7 +29,7 @@ on:
 env:
   # Rolling (cron/dispatch/path-push) builds track Omniphony main; a tagged FEL
   # beta pins liborender to the matching release line for reproducibility.
-  OMNIPHONY_REF: ${{ startsWith(github.ref, 'refs/tags/') && 'v0.4.0' || 'main' }}
+  OMNIPHONY_REF: ${{ startsWith(github.ref, 'refs/tags/') && 'v0.4.1' || 'main' }}
 
 jobs:
   # Resolve the live dv-fel HEAD once so both platforms key their caches on the
