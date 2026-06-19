@@ -35,6 +35,8 @@ uint32_t orender_channel_count(const OrenderRenderer *r);
 uint32_t orender_channel_layout(const OrenderRenderer *r, uint8_t *out_labels, uint32_t cap);
 int orender_channel_mode(const OrenderRenderer *r);
 void orender_set_channel_mode(OrenderRenderer *r, int mode);
+int orender_channel_mapping(const OrenderRenderer *r);
+void orender_set_channel_mapping(OrenderRenderer *r, int mode);
 int orender_object_count(const OrenderRenderer *r);
 int orender_dialnorm_db(const OrenderRenderer *r);
 uint32_t orender_bed_layout(const OrenderRenderer *r, uint8_t *out_labels, uint32_t cap);
@@ -72,6 +74,8 @@ uint32_t orender_channel_count(const OrenderRenderer *r){(void)r;return 0;}
 uint32_t orender_channel_layout(const OrenderRenderer *r,uint8_t *o,uint32_t c){(void)r;(void)o;(void)c;return 0;}
 int orender_channel_mode(const OrenderRenderer *r){(void)r;return 0;}
 void orender_set_channel_mode(OrenderRenderer *r,int m){(void)r;(void)m;}
+int orender_channel_mapping(const OrenderRenderer *r){(void)r;return 0;}
+void orender_set_channel_mapping(OrenderRenderer *r,int m){(void)r;(void)m;}
 int orender_object_count(const OrenderRenderer *r){(void)r;return 0;}
 int orender_dialnorm_db(const OrenderRenderer *r){(void)r;return 0;}
 uint32_t orender_bed_layout(const OrenderRenderer *r,uint8_t *o,uint32_t c){(void)r;(void)o;(void)c;return 0;}
