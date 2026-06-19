@@ -451,10 +451,10 @@ index 96e5f6bb19..313a947f96 100644
      return &p->public;
  }
 diff --git a/filters/f_decoder_wrapper.c b/filters/f_decoder_wrapper.c
-index afa0e5d5d3..576051601f 100644
+index 8e25dc3a2d..61f2a15364 100644
 --- a/filters/f_decoder_wrapper.c
 +++ b/filters/f_decoder_wrapper.c
-@@ -191,11 +191,6 @@ struct priv {
+@@ -192,11 +192,6 @@ struct priv {
  
      int packets_without_output; // number packets sent without frame received
  
@@ -466,7 +466,7 @@ index afa0e5d5d3..576051601f 100644
      // Final PTS of previously decoded frame
      double pts;
  
-@@ -464,10 +459,13 @@ static bool reinit_decoder(struct priv *p)
+@@ -487,10 +482,13 @@ static bool reinit_decoder(struct priv *p)
          // `--ad=orender`. Unlike ad_spdif this outputs normal float PCM
          // (AF_FORMAT_FLOAT), so the native resampler / audio filter chain still
          // applies. Gated on the explicit decoder name so default playback is
@@ -482,7 +482,7 @@ index afa0e5d5d3..576051601f 100644
               strcmp(p->codec->codec, "dts") == 0) &&
              decoder_list_has(user_list, "orender"))
          {
-@@ -481,7 +479,6 @@ static bool reinit_decoder(struct priv *p)
+@@ -504,7 +502,6 @@ static bool reinit_decoder(struct priv *p)
                  talloc_free(ol);
              }
          }
@@ -490,7 +490,7 @@ index afa0e5d5d3..576051601f 100644
  #endif
      }
  
-@@ -1071,25 +1068,6 @@ static void read_frame(struct priv *p)
+@@ -1117,25 +1114,6 @@ static void read_frame(struct priv *p)
  
      frame = mp_pin_out_read(p->decoder->f->pins[1]);
      if (!frame.type) {
