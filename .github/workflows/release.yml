@@ -80,6 +80,16 @@ jobs:
           Cflags: -I\${includedir}
           EOF
 
+      - name: Install nv-codec-headers (CUDA hwaccel)
+        run: |
+          # mpv's cuda-hwaccel/cuda-interop only need the ffnvcodec headers at
+          # build time; libcuda/libnvcuvid are dlopen'd at runtime on the user's
+          # machine, so no CUDA SDK is required here. Install into the same
+          # sysroot that is already on PKG_CONFIG_PATH for the mpv build below.
+          git clone --depth 1 --branch n13.0.19.0 \
+            https://github.com/FFmpeg/nv-codec-headers nv-codec-headers
+          make -C nv-codec-headers install PREFIX="${{ github.workspace }}/sysroot/usr"
+
       - name: Apply patches onto mpv
         run: bash scripts/apply-patches.sh "$MPV_TAG"
 
@@ -88,7 +98,9 @@ jobs:
           export PKG_CONFIG_PATH="${{ github.workspace }}/sysroot/usr/lib/pkgconfig"
           export LD_LIBRARY_PATH="${{ github.workspace }}/sysroot/usr/lib"
           cd "build/mpv-${MPV_TAG}"
-          meson setup _b -Dorender=enabled
+          # cuda-hwaccel/-interop forced on so the released binary always carries
+          # NVIDIA hardware decoding (ffnvcodec provided by the step above).
+          meson setup _b -Dorender=enabled -Dcuda-hwaccel=enabled -Dcuda-interop=enabled
           meson compile -C _b
 
       - name: Package (zip)
@@ -254,6 +266,19 @@ jobs:
           EOF
           x86_64-w64-mingw32-pkg-config --modversion lua52
 
+      - name: Build & install nv-codec-headers (CUDA hwaccel, MinGW)
+        run: |
+          # Header-only ffnvcodec install so mpv's cuda-hwaccel can configure for
+          # the MinGW target; nvcuda/nvcuvid are loaded at runtime on the user's
+          # NVIDIA machine, so nothing else is needed at cross-compile time.
+          # Installs ffnvcodec.pc into $SYS/lib/pkgconfig, where the MinGW
+          # pkg-config wrapper looks (same place lua52.pc / orender.pc land).
+          SYS=/usr/x86_64-w64-mingw32
+          git clone --depth 1 --branch n13.0.19.0 \
+            https://github.com/FFmpeg/nv-codec-headers nv-codec-headers
+          make -C nv-codec-headers install PREFIX="$SYS"
+          x86_64-w64-mingw32-pkg-config --modversion ffnvcodec
+
       - name: Download liborender (built from source)
         uses: actions/download-artifact@v4
         with:
@@ -318,12 +343,18 @@ jobs:
           cd "build/mpv-${MPV_TAG}"
           # Lua 5.2 is built from source in a previous step and installed into
           # $SYS — mpv's `dependency('lua52')` finds it via pkg-config.
+          # cuda-hwaccel forced on (ffnvcodec installed above) so the Windows
+          # binary carries NVIDIA hardware decoding. cuda-interop is left at auto:
+          # the MinGW GL/D3D interop path is less certain to configure here, and
+          # decode (hwaccel) is what "CUDA support" requires — interop is only a
+          # zero-copy display optimisation on top.
           meson setup _b \
             --cross-file="$GITHUB_WORKSPACE/sysroot/mingw-cross.ini" \
             -Dorender=enabled \
             -Dlua=lua52 \
             -Dasio=enabled \
-            -Dd3d11=enabled
+            -Dd3d11=enabled \
+            -Dcuda-hwaccel=enabled
           meson compile -C _b
 
       - name: Package (zip)
