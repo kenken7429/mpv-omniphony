@@ -1,9 +1,9 @@
 name: Release
 
 # Triggered by a v* tag.
-# Cross-compiles mpv (with our ad_orender patches) for Linux and Windows,
-# bundles each with the matching liborender release artifacts, and creates a
-# draft GitHub release.
+# Builds mpv (with our ad_orender patches) for Linux, Windows (MinGW cross) and
+# macOS arm64 (native), bundles each with the matching liborender artifacts, and
+# creates a draft GitHub release.
 #
 # The decoder bridge is NOT bundled — it carries licensing constraints that
 # require the user to download it separately (see README).
@@ -24,7 +24,7 @@ env:
   # construction, and removes the stale-prebuilt skew that made mpv silently
   # ship an old liborender (config parsed differently → default room). Bump
   # this one line on each release.
-  OMNIPHONY_REF: v0.4.0
+  OMNIPHONY_REF: v0.4.1-beta.2
 
 jobs:
   build-linux:
@@ -80,6 +80,16 @@ jobs:
           Cflags: -I\${includedir}
           EOF
 
+      - name: Install nv-codec-headers (CUDA hwaccel)
+        run: |
+          # mpv's cuda-hwaccel/cuda-interop only need the ffnvcodec headers at
+          # build time; libcuda/libnvcuvid are dlopen'd at runtime on the user's
+          # machine, so no CUDA SDK is required here. Install into the same
+          # sysroot that is already on PKG_CONFIG_PATH for the mpv build below.
+          git clone --depth 1 --branch n13.0.19.0 \
+            https://github.com/FFmpeg/nv-codec-headers nv-codec-headers
+          make -C nv-codec-headers install PREFIX="${{ github.workspace }}/sysroot/usr"
+
       - name: Apply patches onto mpv
         run: bash scripts/apply-patches.sh "$MPV_TAG"
 
@@ -88,7 +98,9 @@ jobs:
           export PKG_CONFIG_PATH="${{ github.workspace }}/sysroot/usr/lib/pkgconfig"
           export LD_LIBRARY_PATH="${{ github.workspace }}/sysroot/usr/lib"
           cd "build/mpv-${MPV_TAG}"
-          meson setup _b -Dorender=enabled
+          # cuda-hwaccel/-interop forced on so the released binary always carries
+          # NVIDIA hardware decoding (ffnvcodec provided by the step above).
+          meson setup _b -Dorender=enabled -Dcuda-hwaccel=enabled -Dcuda-interop=enabled
           meson compile -C _b
 
       - name: Package (zip)
@@ -173,7 +185,8 @@ jobs:
             mingw-w64-meson \
             mingw-w64-ffmpeg \
             mingw-w64-libplacebo \
-            mingw-w64-libass
+            mingw-w64-libass \
+            mingw-w64-spirv-cross
 
       - name: Build & install libsrt from source (ABI-matched to our libstdc++)
         run: |
@@ -253,6 +266,19 @@ jobs:
           EOF
           x86_64-w64-mingw32-pkg-config --modversion lua52
 
+      - name: Build & install nv-codec-headers (CUDA hwaccel, MinGW)
+        run: |
+          # Header-only ffnvcodec install so mpv's cuda-hwaccel can configure for
+          # the MinGW target; nvcuda/nvcuvid are loaded at runtime on the user's
+          # NVIDIA machine, so nothing else is needed at cross-compile time.
+          # Installs ffnvcodec.pc into $SYS/lib/pkgconfig, where the MinGW
+          # pkg-config wrapper looks (same place lua52.pc / orender.pc land).
+          SYS=/usr/x86_64-w64-mingw32
+          git clone --depth 1 --branch n13.0.19.0 \
+            https://github.com/FFmpeg/nv-codec-headers nv-codec-headers
+          make -C nv-codec-headers install PREFIX="$SYS"
+          x86_64-w64-mingw32-pkg-config --modversion ffnvcodec
+
       - name: Download liborender (built from source)
         uses: actions/download-artifact@v4
         with:
@@ -317,11 +343,18 @@ jobs:
           cd "build/mpv-${MPV_TAG}"
           # Lua 5.2 is built from source in a previous step and installed into
           # $SYS — mpv's `dependency('lua52')` finds it via pkg-config.
+          # cuda-hwaccel forced on (ffnvcodec installed above) so the Windows
+          # binary carries NVIDIA hardware decoding. cuda-interop is left at auto:
+          # the MinGW GL/D3D interop path is less certain to configure here, and
+          # decode (hwaccel) is what "CUDA support" requires — interop is only a
+          # zero-copy display optimisation on top.
           meson setup _b \
             --cross-file="$GITHUB_WORKSPACE/sysroot/mingw-cross.ini" \
             -Dorender=enabled \
             -Dlua=lua52 \
-            -Dasio=enabled
+            -Dasio=enabled \
+            -Dd3d11=enabled \
+            -Dcuda-hwaccel=enabled
           meson compile -C _b
 
       - name: Package (zip)
@@ -391,8 +424,98 @@ jobs:
           name: mpv-omniphony-windows-x86_64
           path: mpv-omniphony-*-windows-x86_64.zip
 
+  # macOS (Apple Silicon): mpv builds natively, so liborender is built in the
+  # same job (like the Linux job, unlike the Windows cross-compile split).
+  build-macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install mpv build deps (Homebrew)
+        run: |
+          brew update
+          brew install meson ninja pkg-config ffmpeg libass libplacebo luajit
+
+      - name: Checkout Omniphony (renderer source)
+        uses: actions/checkout@v4
+        with:
+          repository: mgth/Omniphony
+          ref: ${{ env.OMNIPHONY_REF }}
+          path: omniphony
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build liborender from source
+        # orender_ffi only pulls orender_engine (audio-free) — same minimal
+        # build as the Linux/Windows liborender jobs.
+        run: cargo build --release -p orender_ffi
+        working-directory: omniphony/omniphony-renderer
+        env:
+          RUSTFLAGS: -D warnings
+
+      - name: Install liborender into sysroot
+        run: |
+          mkdir -p sysroot/usr/lib sysroot/usr/include sysroot/usr/lib/pkgconfig
+          rel=omniphony/omniphony-renderer/target/release
+          # No soname symlink needed on macOS; the release dylib already carries
+          # an `@rpath/liborender.dylib` install name (orender_ffi/build.rs).
+          cp "$rel/liborender.dylib" sysroot/usr/lib/liborender.dylib
+          cp omniphony/omniphony-renderer/orender_ffi/include/orender.h sysroot/usr/include/orender.h
+          # Hand-write a minimal pkg-config so mpv's meson finds liborender.
+          ver="${OMNIPHONY_REF#v}"
+          cat > sysroot/usr/lib/pkgconfig/orender.pc <<EOF
+          prefix=${{ github.workspace }}/sysroot/usr
+          libdir=\${prefix}/lib
+          includedir=\${prefix}/include
+
+          Name: orender
+          Description: Omniphony renderer C library
+          Version: ${ver}
+          Libs: -L\${libdir} -lorender
+          Cflags: -I\${includedir}
+          EOF
+
+      - name: Apply patches onto mpv
+        run: bash scripts/apply-patches.sh "$MPV_TAG"
+
+      - name: Build mpv with ad_orender
+        run: |
+          # Prepend our sysroot, then Homebrew's pkgconfig so meson finds both
+          # liborender and the brew-installed ffmpeg/libass/libplacebo/luajit.
+          export PKG_CONFIG_PATH="${{ github.workspace }}/sysroot/usr/lib/pkgconfig:$(brew --prefix)/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+          cd "build/mpv-${MPV_TAG}"
+          meson setup _b -Dorender=enabled
+          meson compile -C _b
+
+      - name: Package (zip)
+        run: |
+          mkdir -p staging
+          cp "build/mpv-${MPV_TAG}/_b/mpv" staging/
+          cp sysroot/usr/lib/liborender.dylib staging/
+          cp sysroot/usr/include/orender.h staging/
+          cp README.md staging/
+          # Make the bundle relocatable regardless of the install name liborender
+          # was built with (older OMNIPHONY_REFs lack the @rpath id): normalise the
+          # dylib id, repoint mpv's reference to it, and add an @loader_path rpath
+          # so mpv loads the copy bundled beside it.
+          install_name_tool -id @rpath/liborender.dylib staging/liborender.dylib
+          old_ref=$(otool -L staging/mpv | awk '/liborender\.dylib/ {print $1; exit}')
+          if [ -n "$old_ref" ] && [ "$old_ref" != "@rpath/liborender.dylib" ]; then
+            install_name_tool -change "$old_ref" @rpath/liborender.dylib staging/mpv
+          fi
+          install_name_tool -add_rpath @loader_path staging/mpv 2>/dev/null || true
+          cd staging
+          zip -r "../mpv-omniphony-${GITHUB_REF_NAME}-macos-arm64.zip" \
+            mpv liborender.dylib orender.h README.md
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mpv-omniphony-macos-arm64
+          path: mpv-omniphony-*-macos-arm64.zip
+
   release:
-    needs: [build-linux, build-windows]
+    needs: [build-linux, build-windows, build-macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -404,6 +527,10 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: mpv-omniphony-windows-x86_64
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: mpv-omniphony-macos-arm64
 
       - name: Create draft release
         uses: softprops/action-gh-release@v2
@@ -429,9 +556,10 @@ jobs:
             underlying codec mean users must obtain it themselves from
             [harletty-bridge](https://github.com/harletty/harletty-bridge/releases),
             and point mpv at it with
-            `--ad-orender-bridge-path=/path/to/bridge.{so,dll}`.
+            `--ad-orender-bridge-path=/path/to/bridge.{so,dll,dylib}`.
 
             liborender built from source at Omniphony ${{ env.OMNIPHONY_REF }}.
           files: |
             mpv-omniphony-*-linux-x86_64.zip
             mpv-omniphony-*-windows-x86_64.zip
+            mpv-omniphony-*-macos-arm64.zip
