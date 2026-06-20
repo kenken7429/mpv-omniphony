@@ -141,7 +141,7 @@ jobs:
           #   vulkan                -> Vulkan video decode (ffmpeg 8.1, vendor-neutral)
           meson setup _b -Dorender=enabled \
             -Dcuda-hwaccel=enabled -Dcuda-interop=enabled \
-            -Dvaapi=enabled -Dvulkan=enabled
+            -Dvaapi=auto -Dvulkan=enabled
           meson compile -C _b
           echo "== mpv libplacebo linkage =="
           ldd _b/mpv | grep -E 'libplacebo|libavcodec' || true

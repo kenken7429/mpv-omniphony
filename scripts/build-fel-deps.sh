@@ -161,10 +161,12 @@ if [ "$CROSS" = 1 ]; then
               --arch=x86_64 --target-os=mingw32
               --pkg-config="$PKGCONFIG")
 else
-    # Native (Linux): AMD/Intel hwdec (VA-API) + Vulkan video decode (ffmpeg
-    # 8.1 supports it; needs libva/libvulkan at configure time). Windows uses
-    # D3D11VA / nvdec instead, so these are native-only.
-    ff_args+=(--enable-vaapi --enable-vulkan)
+    # Native (Linux): let ffmpeg auto-detect VA-API + Vulkan video decode rather
+    # than forcing them. ffmpeg release/8.1's --enable-vulkan hard-fails configure
+    # when the runner's Vulkan headers/loader are older than 8.1 requires; auto
+    # enables each when sufficient and skips otherwise. CUDA/nvdec + the libplacebo
+    # dv-fel FEL reconstruction path are the essentials and remain.
+    :
 fi
 ( cd "$WORK/ffmpeg" && ./configure "${ff_args[@]}" )
 make -C "$WORK/ffmpeg" -j"$JOBS"
