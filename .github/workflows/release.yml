@@ -105,7 +105,7 @@ jobs:
           # (No -Dvulkan hwdec here: it needs ffmpeg >= 7.0 and apt ships 6.x.)
           meson setup _b -Dorender=enabled \
             -Dcuda-hwaccel=enabled -Dcuda-interop=enabled \
-            -Dvaapi=enabled
+            -Dvaapi=auto
           meson compile -C _b
 
       - name: Package (zip)
