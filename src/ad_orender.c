@@ -120,16 +120,31 @@ struct priv {
     int host_decoder_idx;       // HOST_DEC_LAVC (PCM) or HOST_DEC_SPDIF (passthrough)
     struct mp_decoder *native;  // lazily-created native child decoder for host mode
     int active_path;            // PATH_* of the last packet, for clean transitions
-    /* Track-info codec profile (shift+I) for the spatial path. Double-buffered so
-     * the property/core thread that reads codec_profile never sees a half-written
-     * or freed string: we write the inactive slot, then atomically publish its
-     * pointer. Rebuilt only when the composed value changes (its inputs are
-     * stable per presentation segment), so the hot path does no work. The cache
-     * (last_*) starts at impossible sentinels so the first frame always
-     * publishes; it is reset on a host->spatial switch because host-mode's child
-     * ad_lavc overwrites codec_profile with its own string. */
+    /* Track-info codec profile (shift+I) for the spatial path. Two concerns:
+     *
+     *  - Lifetime: the core thread reads codec_profile from the track list
+     *    (player/misc.c) and the codec-profile property, and p->codec (the
+     *    demuxer-owned sh_stream codec params) outlives this decoder filter. So
+     *    the storage must NOT live in our priv, which is freed when the track's
+     *    decoder is torn down on a switch — a pointer into it would dangle into
+     *    freed talloc that the next decode reuses as float PCM scratch (garbage
+     *    in shift+I, and a c0000005 in ucrtbase's %s walk when the reused bytes
+     *    carry no NUL before a page edge). profile_buf is therefore a talloc
+     *    child of p->codec (allocated lazily in refresh_codec_profile), giving
+     *    the published pointer demuxer lifetime: it can never dangle, even if a
+     *    reader races the decoder teardown. mpv's own decoders rely on the same
+     *    contract — they point codec_profile at static libavcodec literals
+     *    (av_common.c) that outlive every decoder.
+     *  - Concurrency: double-buffered so the reader never sees a half-written
+     *    string — we fill the inactive slot, then atomically publish its pointer.
+     *
+     * Rebuilt only when the composed value changes (its inputs are stable per
+     * presentation segment), so the hot path does no work. The cache (last_*)
+     * starts at impossible sentinels so the first frame always publishes; it is
+     * reset on a host->spatial switch because host-mode's child ad_lavc
+     * overwrites codec_profile with its own string. */
     const char *orender_desc;   // official-cased codec name (codec_desc literal)
-    char profile_buf[2][128];
+    char (*profile_buf)[128];   // [2][128] double-buffer; talloc child of p->codec
     int profile_slot;
     int last_objs;
     int last_dnorm;
@@ -240,6 +255,13 @@ static void refresh_codec_profile(struct priv *p)
     if (objs == p->last_objs && dnorm == p->last_dnorm &&
         bed_sig == p->last_bed_sig)
         return;
+
+    /* Anchor the double-buffer to p->codec (demuxer lifetime), not our priv: the
+     * core thread reads codec_profile long after a track switch has freed this
+     * decoder (see the profile_buf note in struct priv). Allocated once, lazily,
+     * on the first publish. talloc_zero_size aborts on OOM, so it is never NULL. */
+    if (!p->profile_buf)
+        p->profile_buf = talloc_zero_size(p->codec, 2 * sizeof(*p->profile_buf));
 
     int slot = p->profile_slot ^ 1;
     char *buf = p->profile_buf[slot];
@@ -595,7 +617,9 @@ static void ad_orender_destroy(struct mp_filter *da)
 {
     struct priv *p = da->priv;
     /* The native child is a talloc child of `da` and is freed with it; the
-     * engine is an FFI handle we must release explicitly. */
+     * engine is an FFI handle we must release explicitly. The codec profile
+     * buffer is a talloc child of p->codec (not of `da`), so it correctly
+     * outlives this filter — see the profile_buf note in struct priv. */
     if (p->renderer) {
         orender_destroy(p->renderer);
         p->renderer = NULL;
