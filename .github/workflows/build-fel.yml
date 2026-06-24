@@ -459,6 +459,12 @@ jobs:
             **NOT bundled:** the decoder bridge plugin (`*_bridge.dll` / `.so`).
             Provide it via `--ad-orender-bridge-path=<absolute path>` or drop it
             next to `mpv(.exe)`.
+
+            **Credits:** Dolby Vision FEL support is upstream work by
+            [kasper93](https://github.com/kasper93) (Kacper Michajłow) — mpv
+            [PR #17932](https://github.com/mpv-player/mpv/pull/17932), from his
+            fork [github.com/kasper93/mpv](https://github.com/kasper93/mpv)
+            (branch `dv-fel`). This build only packages it.
           files: |
             mpv-omniphony-fel-linux-x86_64.zip
             mpv-omniphony-fel-windows-x86_64.zip

@@ -277,6 +277,11 @@ released distro/package ships yet, so all three are built from source:
 | ffmpeg + `dovi_split` BSF | splits the HEVC P7 bi-layer into BL/EL packets | `deps-fel/ffmpeg/` patch + `build-fel-deps.sh` (ffmpeg PR #23122) |
 | libdovi | RPU parsing for the EL | built by `build-fel-deps.sh` (quietvoid/dovi_tool) |
 
+**Credits:** the Dolby Vision FEL work is by **kasper93** (Kacper Michajłow) —
+mpv [PR #17932](https://github.com/mpv-player/mpv/pull/17932), from his fork
+<https://github.com/kasper93/mpv> (branch `dv-fel`). This repo only packages and
+links it; see the upstream-tracking refs above / in `deps-fel/pins-fel.env`.
+
 **The trap:** even with the mpv patch applied, nothing renders in FEL unless mpv
 is *linked* to a libplacebo dv-fel (API ≥ 367) **and** an ffmpeg with
 `dovi_split`. Binaries that launch but only show the base layer were linked
