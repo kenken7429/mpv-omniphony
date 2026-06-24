@@ -15,7 +15,7 @@ pkgrel=1
 pkgdesc="mpv master + orender spatial audio decoder (HEAD; tracks upstream)"
 arch=('x86_64')
 url="https://github.com/mgth/mpv-omniphony"
-license=('GPL-2.0-or-later')
+license=('GPL-3.0-or-later')
 depends=('liborender>=0.2' 'ffmpeg' 'libass' 'libplacebo' 'lua' 'libx11' 'mesa')
 makedepends=('meson' 'ninja' 'python' 'git')
 provides=('mpv' 'mpv-omniphony')
