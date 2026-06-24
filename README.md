@@ -64,6 +64,20 @@ packaging/PKGBUILD-master   # Arch -git package tracking master HEAD
     bridge_path: /usr/lib/orender/*_bridge.so
   ```
 
+### macOS prebuilt releases (Apple Silicon)
+
+The release archives ship two macOS arm64 forms: `…-macos-arm64.zip` (the CLI
+binary with every dylib bundled — self-contained, no Homebrew ffmpeg needed) and
+`…-macos-arm64-app.zip` (a double-clickable `mpv-omniphony.app`). Both are
+ad-hoc signed (not notarized), so Gatekeeper blocks the first launch. Clear the
+download quarantine once:
+
+```sh
+xattr -dr com.apple.quarantine /path/to/mpv-omniphony.app   # or the extracted mpv
+```
+
+(or right-click → Open the first time).
+
 ## Build (dev)
 
 ```sh

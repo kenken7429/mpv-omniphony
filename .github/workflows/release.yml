@@ -439,7 +439,12 @@ jobs:
       - name: Install mpv build deps (Homebrew)
         run: |
           brew update
-          brew install meson ninja pkg-config ffmpeg libass libplacebo luajit
+          # molten-vk + vulkan-loader provide the Vulkan-on-Metal runtime that
+          # libplacebo's gpu-next path needs on Apple Silicon (there is no native
+          # Vulkan driver on macOS). They are bundled into the artifact below so
+          # the build renders on a clean Mac without a system-wide Vulkan install.
+          brew install meson ninja pkg-config ffmpeg libass libplacebo luajit \
+            molten-vk vulkan-loader vulkan-headers
 
       - name: Checkout Omniphony (renderer source)
         uses: actions/checkout@v4
@@ -494,30 +499,138 @@ jobs:
           meson compile -C _b
 
       - name: Package (zip)
+        # Self-contained bundle: copy every non-system dylib mpv depends on (the
+        # brew ffmpeg/libass/libplacebo/luajit + their transitive deps + the
+        # Vulkan loader/MoltenVK) next to the binary and rewrite the references to
+        # @rpath, so the artifact does not link the user's (possibly different)
+        # Homebrew libs at runtime — that mismatch is what produced
+        # "libavcodec: build version X incompatible with runtime version Y".
+        # This is the macOS analogue of the Windows recursive DLL worklist above.
         run: |
           mkdir -p staging
           cp "build/mpv-${MPV_TAG}/_b/mpv" staging/
           cp sysroot/usr/lib/liborender.dylib staging/
           cp sysroot/usr/include/orender.h staging/
           cp README.md staging/
-          # Make the bundle relocatable regardless of the install name liborender
-          # was built with (older OMNIPHONY_REFs lack the @rpath id): normalise the
-          # dylib id, repoint mpv's reference to it, and add an @loader_path rpath
-          # so mpv loads the copy bundled beside it.
+
+          # liborender first: normalise its id and repoint mpv's reference, so the
+          # recursive pass below treats it as already-bundled (older OMNIPHONY_REFs
+          # lack the @rpath id on the dylib itself).
           install_name_tool -id @rpath/liborender.dylib staging/liborender.dylib
           old_ref=$(otool -L staging/mpv | awk '/liborender\.dylib/ {print $1; exit}')
           if [ -n "$old_ref" ] && [ "$old_ref" != "@rpath/liborender.dylib" ]; then
             install_name_tool -change "$old_ref" @rpath/liborender.dylib staging/mpv
           fi
+
+          # OS-provided libs we must NOT bundle; everything else (brew, /usr/local,
+          # a Cellar path) is copied. Already-@-relative refs are skipped.
+          is_system() {
+            case "$1" in
+              /usr/lib/*|/System/*|@*) return 0 ;;
+            esac
+            return 1
+          }
+          # Resolve a brew opt/Cellar symlink chain to the real dylib so we copy a
+          # real file, not a dangling link; key the bundle by basename.
+          resolve() { python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$1"; }
+
+          worklist=(staging/mpv staging/liborender.dylib)
+          while [ ${#worklist[@]} -gt 0 ]; do
+            obj="${worklist[0]}"; worklist=("${worklist[@]:1}")
+            echo "scanning $obj"
+            # otool -L line 1 is the object's own id; deps start at NR>1.
+            while read -r ref; do
+              is_system "$ref" && continue
+              base=$(basename "$ref")
+              if [ ! -f "staging/$base" ]; then
+                real=$(resolve "$ref")
+                if [ -f "$real" ]; then
+                  cp "$real" "staging/$base"
+                  chmod u+w "staging/$base"
+                  install_name_tool -id "@rpath/$base" "staging/$base"
+                  worklist+=("staging/$base")
+                  echo "  + $base"
+                else
+                  echo "  ! NOT FOUND: $ref"
+                fi
+              fi
+              install_name_tool -change "$ref" "@rpath/$base" "$obj" 2>/dev/null || true
+            done < <(otool -L "$obj" | awk 'NR>1 {print $1}')
+          done
+
+          # Each object resolves @rpath against its own directory.
+          for f in staging/*.dylib; do
+            install_name_tool -add_rpath @loader_path "$f" 2>/dev/null || true
+          done
           install_name_tool -add_rpath @loader_path staging/mpv 2>/dev/null || true
+          install_name_tool -add_rpath @executable_path staging/mpv 2>/dev/null || true
+
+          # Bundle the MoltenVK ICD so --gpu-api=vulkan works without a system
+          # Vulkan install; point the loader at it via a relative path at runtime.
+          mkdir -p staging/share/vulkan/icd.d
+          cp "$(brew --prefix molten-vk)/share/vulkan/icd.d/MoltenVK_icd.json" \
+            staging/share/vulkan/icd.d/
+
+          # Gate: nothing must still link an absolute brew/local path.
+          leak=$(for f in staging/mpv staging/*.dylib; do
+                   otool -L "$f" | awk 'NR>1 {print $1}'
+                 done | grep -E '^/(opt/homebrew|usr/local)' | sort -u || true)
+          if [ -n "$leak" ]; then
+            echo "!! un-bundled absolute references remain:" >&2
+            echo "$leak" >&2
+            exit 1
+          fi
+
           cd staging
-          zip -r "../mpv-omniphony-${GITHUB_REF_NAME}-macos-arm64.zip" \
-            mpv liborender.dylib orender.h README.md
+          zip -r "../mpv-omniphony-${GITHUB_REF_NAME}-macos-arm64.zip" .
 
       - uses: actions/upload-artifact@v4
         with:
           name: mpv-omniphony-macos-arm64
           path: mpv-omniphony-*-macos-arm64.zip
+
+      - name: Build .app bundle
+        # Double-clickable app for users who don't want the bare CLI zip. Layout
+        # mirrors 9beach/mpv-app-bundle: binary in MacOS/, dylibs in Frameworks/,
+        # ICD in Resources/. Ad-hoc signed (no Apple Developer ID), so Gatekeeper
+        # quarantines it on download — README documents the `xattr` unblock step.
+        run: |
+          APP="mpv-omniphony.app"
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Frameworks" \
+                   "$APP/Contents/Resources/vulkan/icd.d"
+          cp staging/mpv "$APP/Contents/MacOS/mpv"
+          cp staging/*.dylib "$APP/Contents/Frameworks/"
+          cp staging/orender.h README.md "$APP/Contents/Resources/" 2>/dev/null || true
+          cp staging/share/vulkan/icd.d/MoltenVK_icd.json \
+            "$APP/Contents/Resources/vulkan/icd.d/"
+          # Binary lives in MacOS/, dylibs in ../Frameworks: add that rpath.
+          install_name_tool -add_rpath @executable_path/../Frameworks \
+            "$APP/Contents/MacOS/mpv" 2>/dev/null || true
+          cat > "$APP/Contents/Info.plist" <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+           "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>CFBundleName</key><string>mpv-omniphony</string>
+            <key>CFBundleDisplayName</key><string>mpv-omniphony</string>
+            <key>CFBundleIdentifier</key><string>fr.mgth.mpv-omniphony</string>
+            <key>CFBundleExecutable</key><string>mpv</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>0.41.0</string>
+            <key>LSMinimumSystemVersion</key><string>11.0</string>
+            <key>NSHighResolutionCapable</key><true/>
+          </dict></plist>
+          PLIST
+          # Ad-hoc sign (nested dylibs too) so the bundle loads under Gatekeeper
+          # once the user clears the download quarantine.
+          codesign --force --deep --sign - "$APP"
+          codesign --verify --deep --strict "$APP" || true
+          zip -r "mpv-omniphony-${GITHUB_REF_NAME}-macos-arm64-app.zip" "$APP"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mpv-omniphony-macos-arm64-app
+          path: mpv-omniphony-*-macos-arm64-app.zip
 
   release:
     needs: [build-linux, build-windows, build-macos]
@@ -537,6 +650,10 @@ jobs:
         with:
           name: mpv-omniphony-macos-arm64
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: mpv-omniphony-macos-arm64-app
+
       - name: Create draft release
         uses: softprops/action-gh-release@v2
         with:
@@ -550,6 +667,14 @@ jobs:
             `orender.dll`, `orender.h`, plus the bundled MinGW runtime DLLs on
             Windows. The live overlay is built into mpv itself — no script to
             install.
+
+            **macOS (Apple Silicon):** two archives — `…-macos-arm64.zip` (the
+            CLI binary with all dylibs bundled, self-contained: no Homebrew
+            ffmpeg required) and `…-macos-arm64-app.zip` (a double-clickable
+            `mpv-omniphony.app`). Both are ad-hoc signed, not notarized, so the
+            first launch is blocked by Gatekeeper. Clear the download quarantine
+            once: `xattr -dr com.apple.quarantine /path/to/mpv-omniphony.app`
+            (or the extracted `mpv`), or right-click → Open the first time.
 
             **Upgrading?** The overlay is now built in: delete any
             `omniphony-overlay.lua` you previously copied into your mpv
@@ -568,3 +693,4 @@ jobs:
             mpv-omniphony-*-linux-x86_64.zip
             mpv-omniphony-*-windows-x86_64.zip
             mpv-omniphony-*-macos-arm64.zip
+            mpv-omniphony-*-macos-arm64-app.zip
