@@ -169,6 +169,188 @@ jobs:
           name: mpv-omniphony-fel-linux-x86_64
           path: mpv-omniphony-fel-linux-x86_64.zip
 
+  # macOS (Apple Silicon): native FEL build. Mirrors build-linux but builds the
+  # FEL deps for arm64 (no NVIDIA; Vulkan via MoltenVK) and bundles every dylib
+  # with otool/install_name_tool so the zip is self-contained.
+  # EXPERIMENTAL: libplacebo's FEL reconstruction runs through MoltenVK, which is
+  # only "nearly conformant" Vulkan on Apple Silicon — the first green run here is
+  # the real proof it renders; visual confirmation is delegated to a tester.
+  build-macos:
+    needs: resolve-dvfel
+    runs-on: macos-14
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build deps (mpv + FEL Vulkan stack)
+        run: |
+          brew update
+          # We build our OWN libplacebo (dv-fel) + ffmpeg (dovi_split) from source,
+          # so do NOT brew-install libplacebo/ffmpeg (they would clash on
+          # PKG_CONFIG_PATH). molten-vk + vulkan-loader/-headers give the
+          # Vulkan-on-Metal stack libplacebo's FEL path needs; cargo-c builds
+          # libdovi (so build-fel-deps.sh skips its own `cargo install cargo-c`).
+          brew install meson ninja pkg-config cargo-c \
+            libass luajit lcms2 shaderc glslang \
+            molten-vk vulkan-headers vulkan-loader
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache FEL dep prefix
+        id: felcache
+        uses: actions/cache@v4
+        with:
+          path: fel-prefix
+          key: fel-macos-${{ needs.resolve-dvfel.outputs.sha }}-${{ hashFiles('deps-fel/**', 'scripts/build-fel-deps.sh') }}
+
+      - name: Build FEL deps (libdovi + libplacebo dv-fel + ffmpeg dovi_split)
+        if: steps.felcache.outputs.cache-hit != 'true'
+        run: |
+          # Make the brew Vulkan/shaderc/lcms visible so libplacebo's meson probes
+          # resolve them; build-fel-deps.sh prepends its own prefix ahead of these.
+          export PKG_CONFIG_PATH="$(brew --prefix)/lib/pkgconfig:$(brew --prefix vulkan-loader)/lib/pkgconfig:$(brew --prefix shaderc)/lib/pkgconfig:$(brew --prefix lcms2)/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+          PREFIX="$GITHUB_WORKSPACE/fel-prefix" WORK="$GITHUB_WORKSPACE/fel-work" \
+            bash scripts/build-fel-deps.sh
+
+      - name: Verify FEL deps
+        run: |
+          export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/fel-prefix/lib/pkgconfig:$(brew --prefix)/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+          # ffmpeg CLI must load OUR libavcodec (the prefix), not a brew one.
+          export DYLD_LIBRARY_PATH="$GITHUB_WORKSPACE/fel-prefix/lib:${DYLD_LIBRARY_PATH:-}"
+          pkg-config --atleast-version=7.370 libplacebo
+          echo "libplacebo $(pkg-config --modversion libplacebo)"
+          "$GITHUB_WORKSPACE/fel-prefix/bin/ffmpeg" -hide_banner -bsfs | grep -q dovi_split
+
+      - name: Checkout Omniphony (renderer source)
+        uses: actions/checkout@v4
+        with:
+          repository: mgth/Omniphony
+          ref: ${{ env.OMNIPHONY_REF }}
+          path: omniphony
+
+      - name: Build liborender from source
+        run: cargo build --release -p orender_ffi
+        working-directory: omniphony/omniphony-renderer
+        env:
+          RUSTFLAGS: -D warnings
+
+      - name: Install liborender into sysroot
+        run: |
+          mkdir -p sysroot/usr/lib sysroot/usr/include sysroot/usr/lib/pkgconfig
+          rel=omniphony/omniphony-renderer/target/release
+          cp "$rel/liborender.dylib" sysroot/usr/lib/liborender.dylib
+          cp omniphony/omniphony-renderer/orender_ffi/include/orender.h sysroot/usr/include/orender.h
+          cat > sysroot/usr/lib/pkgconfig/orender.pc <<EOF
+          prefix=${{ github.workspace }}/sysroot/usr
+          libdir=\${prefix}/lib
+          includedir=\${prefix}/include
+
+          Name: orender
+          Description: Omniphony renderer C library
+          Version: 0.99.0
+          Libs: -L\${libdir} -lorender
+          Cflags: -I\${includedir}
+          EOF
+
+      - name: Apply orender + FEL patches onto mpv
+        run: |
+          out=$(bash scripts/apply-patches-fel.sh | tee /dev/stderr)
+          sha=$(echo "$out" | sed -n 's/^MPV_FEL_SHA=//p')
+          echo "MPV_DIR=build/mpv-master-$sha" >> "$GITHUB_ENV"
+
+      - name: Build mpv (linked against FEL prefix)
+        run: |
+          PREFIX="$GITHUB_WORKSPACE/fel-prefix"
+          # FEL prefix FIRST so its libplacebo/ffmpeg shadow brew's; then orender; then brew.
+          export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:${{ github.workspace }}/sysroot/usr/lib/pkgconfig:$(brew --prefix)/lib/pkgconfig"
+          export DYLD_LIBRARY_PATH="$PREFIX/lib:${{ github.workspace }}/sysroot/usr/lib"
+          export PATH="$PREFIX/bin:$PATH"
+          cd "$MPV_DIR"
+          # No CUDA/VA-API on macOS; Vulkan -> MoltenVK is the gpu-next path.
+          meson setup _b -Dorender=enabled -Dvulkan=enabled
+          meson compile -C _b
+          echo "== mpv libplacebo linkage =="
+          otool -L _b/mpv | grep -E 'libplacebo|libavcodec' || true
+          otool -L _b/mpv | grep -q "$PREFIX/lib/libplacebo" \
+            || { echo "!! mpv did not link the FEL libplacebo in $PREFIX" >&2; exit 1; }
+          # Smoke: the binary + its whole dylib graph must load.
+          _b/mpv --version
+          _b/mpv --gpu-api=help | grep -qi vulkan \
+            || echo "!! warning: vulkan gpu-api not listed (MoltenVK detection?)" >&2
+
+      - name: Package (zip, bundling FEL + Vulkan dylibs)
+        run: |
+          mkdir -p staging
+          cp "$MPV_DIR/_b/mpv" staging/
+          cp sysroot/usr/lib/liborender.dylib staging/
+          cp sysroot/usr/include/orender.h staging/
+          cp README.md staging/
+          # MoltenVK is dlopen'd by the Vulkan loader via its ICD (not a link-time
+          # dep), so copy it explicitly; libvulkan itself is pulled in below as a
+          # dep of libplacebo by the walker.
+          cp "$(brew --prefix molten-vk)/lib/libMoltenVK.dylib" staging/
+
+          # liborender first (older OMNIPHONY_REFs lack the @rpath id).
+          install_name_tool -id @rpath/liborender.dylib staging/liborender.dylib
+          old_ref=$(otool -L staging/mpv | awk '/liborender\.dylib/ {print $1; exit}')
+          if [ -n "$old_ref" ] && [ "$old_ref" != "@rpath/liborender.dylib" ]; then
+            install_name_tool -change "$old_ref" @rpath/liborender.dylib staging/mpv
+          fi
+
+          # Recursive non-system dylib bundler (matches release.yml's macOS job).
+          is_system() { case "$1" in /usr/lib/*|/System/*|@*) return 0 ;; esac; return 1; }
+          resolve() { python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$1"; }
+          worklist=(staging/mpv staging/liborender.dylib staging/libMoltenVK.dylib)
+          while [ ${#worklist[@]} -gt 0 ]; do
+            obj="${worklist[0]}"; worklist=("${worklist[@]:1}")
+            echo "scanning $obj"
+            while read -r ref; do
+              is_system "$ref" && continue
+              base=$(basename "$ref")
+              if [ ! -f "staging/$base" ]; then
+                real=$(resolve "$ref")
+                if [ -f "$real" ]; then
+                  cp "$real" "staging/$base"; chmod u+w "staging/$base"
+                  install_name_tool -id "@rpath/$base" "staging/$base"
+                  worklist+=("staging/$base"); echo "  + $base"
+                else
+                  echo "  ! NOT FOUND: $ref"
+                fi
+              fi
+              install_name_tool -change "$ref" "@rpath/$base" "$obj" 2>/dev/null || true
+            done < <(otool -L "$obj" | awk 'NR>1 {print $1}')
+          done
+          for f in staging/*.dylib; do
+            install_name_tool -add_rpath @loader_path "$f" 2>/dev/null || true
+          done
+          install_name_tool -add_rpath @loader_path staging/mpv 2>/dev/null || true
+          install_name_tool -add_rpath @executable_path staging/mpv 2>/dev/null || true
+
+          # MoltenVK ICD pointing at the bundled driver (relative to the json dir).
+          # Users export VK_ICD_FILENAMES to this file (documented in the release).
+          mkdir -p staging/share/vulkan/icd.d
+          sed 's#"library_path"[[:space:]]*:[[:space:]]*"[^"]*"#"library_path": "../../../libMoltenVK.dylib"#' \
+            "$(brew --prefix molten-vk)/share/vulkan/icd.d/MoltenVK_icd.json" \
+            > staging/share/vulkan/icd.d/MoltenVK_icd.json
+
+          # Gate: nothing must still link an absolute brew/local path.
+          leak=$(for f in staging/mpv staging/*.dylib; do
+                   otool -L "$f" | awk 'NR>1 {print $1}'
+                 done | grep -E '^/(opt/homebrew|usr/local)' | sort -u || true)
+          if [ -n "$leak" ]; then
+            echo "!! un-bundled absolute references remain:" >&2
+            echo "$leak" >&2
+            exit 1
+          fi
+
+          cd staging && zip -r "../mpv-omniphony-fel-macos-arm64.zip" .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mpv-omniphony-fel-macos-arm64
+          path: mpv-omniphony-fel-macos-arm64.zip
+
   build-liborender-windows:
     runs-on: windows-latest
     steps:
@@ -432,7 +614,7 @@ jobs:
   # Skipped for cron/dispatch/path-push runs (those just upload CI artifacts).
   publish-fel-beta:
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [build-linux, build-windows]
+    needs: [build-linux, build-macos, build-windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -440,6 +622,9 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: mpv-omniphony-fel-linux-x86_64
+      - uses: actions/download-artifact@v4
+        with:
+          name: mpv-omniphony-fel-macos-arm64
       - uses: actions/download-artifact@v4
         with:
           name: mpv-omniphony-fel-windows-x86_64
@@ -460,6 +645,14 @@ jobs:
             Provide it via `--ad-orender-bridge-path=<absolute path>` or drop it
             next to `mpv(.exe)`.
 
+            **macOS (Apple Silicon, experimental):** `…-fel-macos-arm64.zip` is
+            self-contained (all dylibs bundled). FEL rendering goes through
+            Vulkan→MoltenVK, which is not yet fully conformant on Apple Silicon —
+            treat it as experimental. Clear the download quarantine
+            (`xattr -dr com.apple.quarantine mpv`), and point the Vulkan loader at
+            the bundled MoltenVK ICD:
+            `VK_ICD_FILENAMES=<dir>/share/vulkan/icd.d/MoltenVK_icd.json`.
+
             **Credits:** Dolby Vision FEL support is upstream work by
             [kasper93](https://github.com/kasper93) (Kacper Michajłow) — mpv
             [PR #17932](https://github.com/mpv-player/mpv/pull/17932), from his
@@ -467,4 +660,5 @@ jobs:
             (branch `dv-fel`). This build only packages it.
           files: |
             mpv-omniphony-fel-linux-x86_64.zip
+            mpv-omniphony-fel-macos-arm64.zip
             mpv-omniphony-fel-windows-x86_64.zip

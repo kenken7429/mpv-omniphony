@@ -30,7 +30,9 @@ source "$REPO_ROOT/deps-fel/pins-fel.env"
 
 PREFIX="${PREFIX:-$PWD/fel-prefix}"
 WORK="${WORK:-$PWD/fel-work}"
-JOBS="${JOBS:-$(nproc)}"
+# macOS lacks nproc / NVIDIA / LD_LIBRARY_PATH; detect it once and branch below.
+[ "$(uname -s)" = "Darwin" ] && MACOS=1 || MACOS=0
+JOBS="${JOBS:-$( [ "$MACOS" = 1 ] && sysctl -n hw.ncpu || nproc )}"
 FFMPEG_PATCHES_DIR="$REPO_ROOT/deps-fel/ffmpeg"
 
 CROSS=0
@@ -104,7 +106,12 @@ PLACEBO_SHA="$(git -C "$WORK/libplacebo" rev-parse --short HEAD)"
 
 # Force --libdir=lib so the .pc lands in $PREFIX/lib/pkgconfig everywhere;
 # Ubuntu/Debian meson otherwise defaults to a multiarch lib/<triplet> dir that
-# our PKG_CONFIG_PATH ($PREFIX/lib/pkgconfig) would miss.
+# our PKG_CONFIG_PATH ($PREFIX/lib/pkgconfig) would miss. (Homebrew is not
+# multiarch, so this is a no-op but still correct on macOS.)
+# Vulkan is still required for the FEL reconstruction path. On macOS there is no
+# native Vulkan driver: -Dvulkan=enabled resolves against the Homebrew Vulkan
+# stack (molten-vk + vulkan-loader + vulkan-headers, plus shaderc/glslang), i.e.
+# Vulkan-on-Metal via MoltenVK. The caller must have those on PKG_CONFIG_PATH.
 pl_args=(--prefix="$PREFIX" --libdir=lib --buildtype=release
          -Dvulkan=enabled -Dshaderc=enabled -Dlcms=enabled
          -Ddovi=enabled -Dlibdovi=enabled -Ddemos=false)
@@ -130,13 +137,18 @@ log "libplacebo $pl_ver installed (sha=$PLACEBO_SHA)"
 #     cross build works the same. Installs ffnvcodec.pc into $PREFIX/lib/pkgconfig
 #     (already first on PKG_CONFIG_PATH).
 # ---------------------------------------------------------------------------
-NVCODEC_REF=n13.0.19.0
-log "nv-codec-headers $NVCODEC_REF"
-if [ ! -d "$WORK/nv-codec-headers/.git" ]; then
-    git clone --depth 1 --branch "$NVCODEC_REF" \
-        https://github.com/FFmpeg/nv-codec-headers "$WORK/nv-codec-headers"
+# No NVIDIA on Apple Silicon — skip ffnvcodec entirely there.
+if [ "$MACOS" = 1 ]; then
+    log "nv-codec-headers skipped (macOS: no NVIDIA)"
+else
+    NVCODEC_REF=n13.0.19.0
+    log "nv-codec-headers $NVCODEC_REF"
+    if [ ! -d "$WORK/nv-codec-headers/.git" ]; then
+        git clone --depth 1 --branch "$NVCODEC_REF" \
+            https://github.com/FFmpeg/nv-codec-headers "$WORK/nv-codec-headers"
+    fi
+    make -C "$WORK/nv-codec-headers" install PREFIX="$PREFIX"
 fi
-make -C "$WORK/nv-codec-headers" install PREFIX="$PREFIX"
 
 # ---------------------------------------------------------------------------
 # 3. ffmpeg + dovi_split BSF (vendored patch).
@@ -154,8 +166,10 @@ for p in "$FFMPEG_PATCHES_DIR"/*.patch; do
 done
 
 ff_args=(--prefix="$PREFIX" --enable-shared --disable-static
-         --enable-gpl --enable-version3 --disable-doc
-         --enable-ffnvcodec --enable-nvdec --enable-cuvid)
+         --enable-gpl --enable-version3 --disable-doc)
+# NVIDIA nvdec/cuvid only where NVIDIA exists; macOS auto-detects VideoToolbox
+# instead, which is fine — FEL needs only the dovi_split BSF + libdovi.
+[ "$MACOS" = 1 ] || ff_args+=(--enable-ffnvcodec --enable-nvdec --enable-cuvid)
 if [ "$CROSS" = 1 ]; then
     ff_args+=(--enable-cross-compile --cross-prefix="$CROSS_PREFIX"
               --arch=x86_64 --target-os=mingw32
@@ -172,15 +186,22 @@ fi
 make -C "$WORK/ffmpeg" -j"$JOBS"
 make -C "$WORK/ffmpeg" install
 
-# Run the freshly built ffmpeg CLI against ITS OWN libavcodec (LD_LIBRARY_PATH),
+# Run the freshly built ffmpeg CLI against ITS OWN libavcodec (loader path),
 # not whatever libavcodec happens to be on the system loader path — otherwise the
 # check silently inspects the wrong (dovi_split-less) library. Native only; under
 # cross there is no runnable host ffmpeg, so we trust the configure/compile of the
-# BSF instead.
+# BSF instead. macOS uses DYLD_LIBRARY_PATH (SIP doesn't strip it for our own,
+# non-system binary).
 if [ "$CROSS" = 0 ]; then
-    LD_LIBRARY_PATH="$PREFIX/lib:${LD_LIBRARY_PATH:-}" \
-        "${PREFIX}/bin/ffmpeg" -hide_banner -bsfs 2>/dev/null | grep -q dovi_split \
-        || { echo "!! dovi_split BSF missing from built ffmpeg" >&2; exit 1; }
+    if [ "$MACOS" = 1 ]; then
+        DYLD_LIBRARY_PATH="$PREFIX/lib:${DYLD_LIBRARY_PATH:-}" \
+            "${PREFIX}/bin/ffmpeg" -hide_banner -bsfs 2>/dev/null | grep -q dovi_split \
+            || { echo "!! dovi_split BSF missing from built ffmpeg" >&2; exit 1; }
+    else
+        LD_LIBRARY_PATH="$PREFIX/lib:${LD_LIBRARY_PATH:-}" \
+            "${PREFIX}/bin/ffmpeg" -hide_banner -bsfs 2>/dev/null | grep -q dovi_split \
+            || { echo "!! dovi_split BSF missing from built ffmpeg" >&2; exit 1; }
+    fi
     log "ffmpeg OK (dovi_split present)"
 else
     grep -q dovi_split "$WORK/ffmpeg/libavcodec/bitstream_filters.c" \

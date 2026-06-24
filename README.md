@@ -322,8 +322,19 @@ mpv -v --vo=gpu-next sample.mkv
 `MPV_NO_FEL=1` forces base-layer-only rendering — compare a `screenshot` with
 and without it for an A/B proof (a real P7 clip differs by ~PSNR 20 dB / SSIM 0.7).
 
-CI: opt-in workflow `.github/workflows/build-fel.yml` (Linux + Windows/MinGW,
-`workflow_dispatch` + weekly). It does **not** touch the nightly/release builds.
+CI: opt-in workflow `.github/workflows/build-fel.yml` (Linux, macOS arm64,
+Windows/MinGW; `workflow_dispatch` + weekly). It does **not** touch the
+nightly/release builds.
+
+**macOS (Apple Silicon):** `build-fel-deps.sh` auto-detects Darwin (skips
+NVIDIA, uses `sysctl`/`DYLD_LIBRARY_PATH`). It needs the Homebrew Vulkan stack —
+`brew install molten-vk vulkan-headers vulkan-loader shaderc glslang lcms2` — so
+libplacebo's `-Dvulkan=enabled` resolves to Vulkan-on-Metal via MoltenVK. The
+CI artifact bundles every dylib plus `libMoltenVK` and a MoltenVK ICD; at
+runtime point the loader at it with
+`VK_ICD_FILENAMES=<dir>/share/vulkan/icd.d/MoltenVK_icd.json`. This is
+**experimental**: MoltenVK is not yet fully conformant, so FEL reconstruction on
+Apple Silicon is unverified and may not render on every machine.
 
 **Exit plan:** the day mpv #17932 + libplacebo !851 + ffmpeg #23122 all merge and
 ship in releases, delete `patches-fel/`, `deps-fel/`, `scripts/build-fel-deps.sh`,
