@@ -17,7 +17,7 @@ pkgrel=1
 pkgdesc="mpv with the orender spatial audio decoder (object rendering via liborender)"
 arch=('x86_64')
 url="https://github.com/mgth/mpv-omniphony"
-license=('GPL-2.0-or-later')
+license=('GPL-3.0-or-later')
 depends=('liborender>=0.2' 'ffmpeg' 'libass' 'libplacebo' 'lua' 'libx11' 'mesa')
 makedepends=('meson' 'ninja' 'python')
 provides=("mpv=$_mpvver")

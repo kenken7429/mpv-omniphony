@@ -277,3 +277,32 @@ git add patches-master/ && git commit -m "patches-master: rebase onto upstream/m
 Packaging: `packaging/PKGBUILD-master` builds an `mpv-omniphony-git` package
 that clones mpv master at install time and applies `patches-master/`. It
 conflicts with both stock `mpv` and the stable `mpv-omniphony` — install one.
+
+## License
+
+`mpv-omniphony` is a patch-set fork of
+[mpv](https://github.com/mpv-player/mpv) (**GPL-2.0-or-later**, © the mpv
+authors) that adds the `ad_orender` audio decoder. `ad_orender` links
+**`liborender`** from [Omniphony](https://github.com/mgth/Omniphony), which is
+**GPL-3.0-or-later**.
+
+- Our first-party additions — `src/ad_orender.c`, the integration commits in
+  `patches/` / `patches-master/`, and the build tooling — are
+  **GPL-2.0-or-later**. The bundled Steinberg ASIO output driver (`ao_asio.c`,
+  added by `patches/`) keeps its **LGPL-2.1-or-later** header.
+- mpv's own license files (`Copyright`, `LICENSE.GPL`, `LICENSE.LGPL`) ship
+  unchanged inside the built mpv tree.
+
+**The binaries we distribute combine GPLv2-or-later mpv with GPLv3-or-later
+liborender, so the combined work is licensed `GPL-3.0-or-later`** (the GPLv2+
+parts under their "or later" option). Full text: [`COPYING`](COPYING).
+
+**Corresponding source (GPLv3 §6):** each release ships from mpv `v0.41.0` (the
+pinned tag) plus this repository's `patches/`, and `liborender` built from
+Omniphony at the `OMNIPHONY_REF` printed in the release notes
+(<https://github.com/mgth/Omniphony>).
+
+**Bundled third-party libraries** (ffmpeg, libplacebo, LuaJIT, …, plus the
+Windows/macOS runtime libraries) retain their own licenses — see
+[`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md). The decoder **bridge** plugin
+is not included and is licensed separately.

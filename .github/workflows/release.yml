@@ -689,6 +689,14 @@ jobs:
             `--ad-orender-bridge-path=/path/to/bridge.{so,dll,dylib}`.
 
             liborender built from source at Omniphony ${{ env.OMNIPHONY_REF }}.
+
+            **License — GPL-3.0-or-later.** This build combines mpv
+            (GPL-2.0-or-later) with liborender (GPL-3.0-or-later), so the
+            combined work is GPLv3. Corresponding source: mpv
+            `${{ env.MPV_TAG }}` + this repo's `patches/` at commit
+            ${{ github.sha }}, and liborender at Omniphony
+            `${{ env.OMNIPHONY_REF }}` (https://github.com/mgth/Omniphony).
+            Bundled third-party libraries: see `THIRD-PARTY-NOTICES.md`.
           files: |
             mpv-omniphony-*-linux-x86_64.zip
             mpv-omniphony-*-windows-x86_64.zip

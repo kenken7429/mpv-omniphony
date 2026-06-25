@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* Copyright (C) 2025-2026 Mathieu GRENET <mathieu@mgth.fr> */
+
 /*
  * ad_orender.c — mpv audio decoder that renders spatial audio through liborender.
  *
