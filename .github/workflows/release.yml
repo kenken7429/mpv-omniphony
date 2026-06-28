@@ -568,9 +568,14 @@ jobs:
             || { echo "!! libMoltenVK.dylib not bundled" >&2; exit 1; }
           test -f mpv-omniphony.app/Contents/Resources/vulkan/icd.d/MoltenVK_icd.json \
             || { echo "!! MoltenVK ICD not bundled" >&2; exit 1; }
+          # The bundled libMoltenVK keeps its brew install *id* (otool line 2);
+          # that's by design — it's dlopen'd via the ICD's relative library_path,
+          # never linked — so exclude that one self-reference. Any OTHER absolute
+          # brew/local path would be a real un-relocated dependency.
           leak=$(find mpv-omniphony.app -type f \( -name '*.dylib' -o -name mpv \) -print0 \
                  | xargs -0 -I{} sh -c 'otool -L "{}" | awk "NR>1{print \$1}"' \
-                 | grep -E '^/(opt/homebrew|usr/local)' | sort -u || true)
+                 | grep -E '^/(opt/homebrew|usr/local)' \
+                 | grep -v '/libMoltenVK\.dylib$' | sort -u || true)
           [ -z "$leak" ] || { echo "!! un-bundled absolute references remain:" >&2; echo "$leak" >&2; exit 1; }
           codesign --verify --deep --strict mpv-omniphony.app || true
 
