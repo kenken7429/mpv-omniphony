@@ -606,11 +606,28 @@ jobs:
         with:
           name: mpv-omniphony-macos-arm64
 
-      - name: Create draft release
+      # Resolve the engine commit this build embeds, so the relocated release is
+      # tagged at the exact liborender source it was compiled against (GPL §6).
+      - name: Resolve engine commit for the release tag
+        id: engineref
+        env:
+          GH_TOKEN: ${{ secrets.OMNIPHONY_RELEASE_TOKEN }}
+        run: echo "sha=$(gh api repos/mgth/Omniphony/commits/${OMNIPHONY_REF} --jq .sha)" >> "$GITHUB_OUTPUT"
+
+      # Publish the player bundles on the ENGINE repo's Releases page (the canonical
+      # download hub) rather than here. Builds still run on mpv-omniphony; only the
+      # publish target moves. The `mpv-v*` tag namespace avoids the engine repo's own
+      # `v*` (Studio) and `liborender-v*` release triggers. Requires the
+      # OMNIPHONY_RELEASE_TOKEN secret (contents:write on mgth/Omniphony).
+      - name: Publish release on the engine repo (download hub)
         uses: softprops/action-gh-release@v2
         with:
+          repository: mgth/Omniphony
+          token: ${{ secrets.OMNIPHONY_RELEASE_TOKEN }}
+          tag_name: mpv-${{ github.ref_name }}
+          target_commitish: ${{ steps.engineref.outputs.sha }}
           draft: true
-          name: ${{ github.ref_name }}
+          name: mpv-omniphony ${{ github.ref_name }}
           body: |
             mpv-omniphony ${{ github.ref_name }} — mpv with the ad_orender
             spatial audio decoder.
