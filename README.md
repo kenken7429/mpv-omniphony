@@ -5,6 +5,13 @@ mpv with a **spatial audio decoder** that renders objects through
 instead of letting FFmpeg downmix. Non-spatial audio keeps playing via
 mpv's normal `ad_lavc` decoder.
 
+> ⭐ **mpv-omniphony is one frontend for the
+> [Omniphony](https://github.com/mgth/Omniphony) spatial audio engine — the engine
+> is the project.** If this is useful to you, please
+> **[star the engine ↗](https://github.com/mgth/Omniphony)**.
+>
+> [![Star Omniphony](https://img.shields.io/github/stars/mgth/Omniphony?style=social&label=Star%20the%20engine)](https://github.com/mgth/Omniphony)
+
 ![mpv-omniphony — mpv playing a spatial mix, supervised by Omniphony Studio](mpv-omniphony.png)
 
 *Left: mpv's stats overlay shows `ad_orender` picked up the stream and
