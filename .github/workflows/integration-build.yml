@@ -24,7 +24,7 @@ jobs:
   build-linux:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install mpv build deps
         run: |
@@ -35,7 +35,7 @@ jobs:
             libass-dev libplacebo-dev liblua5.2-dev libx11-dev
 
       - name: Checkout Omniphony (renderer source)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: mgth/Omniphony
           ref: ${{ env.OMNIPHONY_REF }}
@@ -91,7 +91,7 @@ jobs:
           zip -r "../mpv-omniphony-integration-linux-x86_64.zip" \
             mpv liborender.so.0 orender.h README.md
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: mpv-omniphony-linux-x86_64
           path: mpv-omniphony-integration-linux-x86_64.zip
@@ -100,7 +100,7 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Checkout Omniphony (renderer source)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: mgth/Omniphony
           ref: ${{ env.OMNIPHONY_REF }}
@@ -121,7 +121,7 @@ jobs:
           Copy-Item omniphony-renderer/target/release/orender.dll out/
           Copy-Item omniphony-renderer/orender_ffi/include/orender.h out/
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: liborender-windows-from-source
           path: out
@@ -131,7 +131,7 @@ jobs:
     runs-on: ubuntu-latest
     container: archlinux:latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Bootstrap Arch + Martchus mingw-w64 repo
         run: |
@@ -213,7 +213,7 @@ jobs:
           x86_64-w64-mingw32-pkg-config --modversion lua52
 
       - name: Download liborender (built from source)
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: liborender-windows-from-source
           path: /tmp/liborender
@@ -317,7 +317,7 @@ jobs:
           cd staging
           zip -r "../mpv-omniphony-integration-windows-x86_64.zip" .
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: mpv-omniphony-windows-x86_64
           path: mpv-omniphony-integration-windows-x86_64.zip
@@ -328,11 +328,11 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: mpv-omniphony-linux-x86_64
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: mpv-omniphony-windows-x86_64
 
@@ -343,7 +343,7 @@ jobs:
         run: gh release delete integration --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes || true
 
       - name: Publish rolling integration pre-release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: integration
           name: 'mpv-omniphony (integration build)'
