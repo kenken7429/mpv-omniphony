@@ -685,12 +685,12 @@ jobs:
           repository: mgth/Omniphony
           token: ${{ secrets.OMNIPHONY_RELEASE_TOKEN }}
           tag_name: mpv-${{ github.ref_name }}
-          name: 'mpv-omniphony ${{ github.ref_name }} — master (spatial audio + Dolby Vision P7 FEL)'
+          name: 'mpv-omniphony ${{ github.ref_name }} — master (spatial audio + enhanced video-range)'
           prerelease: true
           make_latest: false
           body: |
             Master-tracking build of mpv-omniphony: mpv **master** + the orender
-            spatial-audio patches, with **native Dolby Vision Profile 7 FEL**.
+            spatial-audio patches, with **native enhanced video-range playback**.
             liborender from Omniphony `${{ env.OMNIPHONY_REF }}`.
             **Beta — NOT a stable release.**
 
@@ -699,14 +699,14 @@ jobs:
             next to `mpv(.exe)`.
 
             **macOS (Apple Silicon, experimental):** `…-fel-macos-arm64.zip` is
-            self-contained (all dylibs bundled). FEL rendering goes through
+            self-contained (all dylibs bundled). Enhanced video-range rendering goes through
             Vulkan→MoltenVK, which is not yet fully conformant on Apple Silicon —
             treat it as experimental. Clear the download quarantine
             (`xattr -dr com.apple.quarantine mpv`), and point the Vulkan loader at
             the bundled MoltenVK ICD:
             `VK_ICD_FILENAMES=<dir>/share/vulkan/icd.d/MoltenVK_icd.json`.
 
-            **Credits:** Dolby Vision Profile 7 FEL support is upstream mpv work by
+            **Credits:** the enhanced video-range support is upstream mpv work by
             [kasper93](https://github.com/kasper93) (Kacper Michajłow) — mpv
             [PR #17932](https://github.com/mpv-player/mpv/pull/17932), merged into
             mpv master (v0.42.0), building on the matching libplacebo + ffmpeg
