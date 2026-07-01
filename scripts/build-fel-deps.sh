@@ -2,13 +2,15 @@
 # Build the Dolby Vision FEL dependency stack into an isolated $PREFIX, to be
 # linked afterwards by the normal mpv build (export PKG_CONFIG_PATH / PATH).
 #
-# FEL needs three libs that no released distro/package ships yet:
+# FEL needs three libs that no released distro/package ships yet (but which are
+# all now in their UPSTREAM masters — no fork/patch, see deps-fel/pins-fel.env):
 #   libdovi      RPU parsing for the enhancement layer (pkg-config: dovi)
-#   libplacebo   dv-fel branch, reconstructs the FEL (needs PL_API_VER >= 367)
-#   ffmpeg       + vendored dovi_split BSF (deps-fel/ffmpeg/*.patch)
+#   libplacebo   upstream master, reconstructs the FEL (needs PL_API_VER >= 370)
+#   ffmpeg       upstream master, carries the dovi_split BSF + DoVi stream group
 #
 # This is NOT the mpv build — it is only the FEL delta on the dependency side.
-# Refs/branches come from deps-fel/pins-fel.env (policy: follow dv-fel HEAD).
+# Refs/branches come from deps-fel/pins-fel.env (upstream master, built from
+# source only because no release ships these yet).
 #
 # Usage:
 #   PREFIX=/path/to/prefix scripts/build-fel-deps.sh            # native (Linux)
@@ -33,7 +35,6 @@ WORK="${WORK:-$PWD/fel-work}"
 # macOS lacks nproc / NVIDIA / LD_LIBRARY_PATH; detect it once and branch below.
 [ "$(uname -s)" = "Darwin" ] && MACOS=1 || MACOS=0
 JOBS="${JOBS:-$( [ "$MACOS" = 1 ] && sysctl -n hw.ncpu || nproc )}"
-FFMPEG_PATCHES_DIR="$REPO_ROOT/deps-fel/ffmpeg"
 
 CROSS=0
 [ "${1:-}" = "--cross" ] && CROSS=1
@@ -42,7 +43,7 @@ CROSS_PREFIX="${CROSS_PREFIX:-x86_64-w64-mingw32-}"
 RUST_TARGET="${RUST_TARGET:-x86_64-pc-windows-gnu}"
 
 # pkg-config the rest of the build will consult; our $PREFIX must win so the
-# dv-fel libplacebo shadows any system/Martchus libplacebo (the classic FEL trap).
+# master libplacebo shadows any system/Martchus libplacebo (the classic FEL trap).
 export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
 # Only put $PREFIX/bin on PATH in native mode (to run the freshly built ffmpeg
 # for the dovi_split check). In cross mode $PREFIX is the MinGW sysroot, whose
@@ -92,7 +93,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 2. libplacebo dv-fel (API >= 367) — follow HEAD (kasper93 force-pushes).
+# 2. libplacebo (upstream master, PL_API_VER >= 370) — has the FEL API.
 # ---------------------------------------------------------------------------
 log "libplacebo $LIBPLACEBO_REF"
 if [ ! -d "$WORK/libplacebo/.git" ]; then
@@ -126,9 +127,11 @@ ninja -C "$WORK/libplacebo/build" install
 
 pl_ver="$("$PKGCONFIG" --modversion libplacebo)"
 log "libplacebo $pl_ver installed (sha=$PLACEBO_SHA)"
-# 7.370 corresponds to PL_API_VER 367 (the FEL gate). Refuse anything older.
+# modversion 7.370 == PL_API_VER 370. pl_frame.enhancement_layer landed at 367,
+# but mpv master dropped the deprecated pl_avdovi_metadata_supported (removed at
+# 370), so it needs >= 370. Upstream master is already there. Refuse anything older.
 "$PKGCONFIG" --atleast-version=7.370 libplacebo || {
-    echo "!! libplacebo $pl_ver lacks the FEL API (need >= 7.370 / PL_API_VER 367)" >&2; exit 1; }
+    echo "!! libplacebo $pl_ver lacks the FEL API (need >= 7.370 / PL_API_VER 370)" >&2; exit 1; }
 
 # ---------------------------------------------------------------------------
 # 2b. nv-codec-headers (ffnvcodec) — lets the ffmpeg below build NVIDIA nvdec/
@@ -151,19 +154,18 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 3. ffmpeg + dovi_split BSF (vendored patch).
+# 3. ffmpeg (upstream master — carries the dovi_split BSF + DoVi stream group).
 # ---------------------------------------------------------------------------
-log "ffmpeg $FFMPEG_REF + dovi_split"
+log "ffmpeg $FFMPEG_REF"
 if [ ! -d "$WORK/ffmpeg/.git" ]; then
     git clone --branch "$FFMPEG_REF" "$FFMPEG_URL" "$WORK/ffmpeg"
+else
+    # We track master now, so an existing clone must re-fetch (like libplacebo
+    # above) — a bare reset would freeze it at the clone-time origin/master.
+    git -C "$WORK/ffmpeg" fetch origin "${FFMPEG_REF##*/}"
 fi
 git -C "$WORK/ffmpeg" reset --hard -q "origin/${FFMPEG_REF##*/}" 2>/dev/null || true
 git -C "$WORK/ffmpeg" clean -fdx >/dev/null 2>&1 || true
-shopt -s nullglob
-for p in "$FFMPEG_PATCHES_DIR"/*.patch; do
-    echo "   - applying $(basename "$p")"
-    git -C "$WORK/ffmpeg" apply --3way "$p"
-done
 
 ff_args=(--prefix="$PREFIX" --enable-shared --disable-static
          --enable-gpl --enable-version3 --disable-doc)
@@ -176,10 +178,10 @@ if [ "$CROSS" = 1 ]; then
               --pkg-config="$PKGCONFIG")
 else
     # Native (Linux): let ffmpeg auto-detect VA-API + Vulkan video decode rather
-    # than forcing them. ffmpeg release/8.1's --enable-vulkan hard-fails configure
-    # when the runner's Vulkan headers/loader are older than 8.1 requires; auto
-    # enables each when sufficient and skips otherwise. CUDA/nvdec + the libplacebo
-    # dv-fel FEL reconstruction path are the essentials and remain.
+    # than forcing them. --enable-vulkan hard-fails configure when the runner's
+    # Vulkan headers/loader are older than ffmpeg requires; auto enables each when
+    # sufficient and skips otherwise. CUDA/nvdec + the libplacebo master FEL
+    # reconstruction path are the essentials and remain.
     :
 fi
 ( cd "$WORK/ffmpeg" && ./configure "${ff_args[@]}" )
@@ -212,13 +214,13 @@ fi
 cat <<EOF
 
 === FEL deps ready in: $PREFIX ===
-  libplacebo $pl_ver (dv-fel $PLACEBO_SHA, API >= 367)
-  ffmpeg     $FFMPEG_REF + dovi_split
+  libplacebo $pl_ver (master $PLACEBO_SHA, API >= 370)
+  ffmpeg     $FFMPEG_REF (dovi_split BSF + DoVi stream group, upstream)
   libdovi    $("$PKGCONFIG" --modversion dovi 2>/dev/null || echo present)
 
 Link your mpv build against it:
   export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:\$PKG_CONFIG_PATH"
   export PATH="$PREFIX/bin:\$PATH"
-Then apply the FEL mpv patch on top of the orender tree:
-  scripts/apply-patches-fel.sh
+Then apply the orender patches onto mpv master (FEL is native there now):
+  scripts/apply-patches-master.sh
 EOF

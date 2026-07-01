@@ -266,44 +266,49 @@ conflicts with both stock `mpv` and the stable `mpv-omniphony` — install one.
 
 ## Dolby Vision FEL (experimental)
 
-Optional support for **Dolby Vision Profile 7 FEL** (Full Enhancement Layer).
-This is **not a single mpv patch** — it needs three aligned components that no
-released distro/package ships yet, so all three are built from source:
+Optional support for **Dolby Vision Profile 7 FEL** (Full Enhancement Layer). As
+of 2026-07-01 this is a **native, upstream mpv feature** (no fork, no vendored
+patch): mpv [PR #17932](https://github.com/mpv-player/mpv/pull/17932) is **merged
+into mpv master** (v0.42.0), and the two deps it needs are in their own upstream
+masters. We still build those two deps from source only because no released
+distro/package ships the FEL API yet:
 
 | Component | Role | Source |
 |---|---|---|
-| mpv `dv-fel` patch | demux P7, split BL/EL, pair, hand EL to libplacebo | `patches-fel/` (mpv PR #17932) |
-| libplacebo `dv-fel` | reconstructs the FEL (needs `PL_API_VER >= 367`) | built by `build-fel-deps.sh` (libplacebo MR !851) |
-| ffmpeg + `dovi_split` BSF | splits the HEVC P7 bi-layer into BL/EL packets | `deps-fel/ffmpeg/` patch + `build-fel-deps.sh` (ffmpeg PR #23122) |
+| mpv master | demux P7, split BL/EL, pair, hand EL to libplacebo | native (mpv PR #17932, merged); applied via `patches-master/` (orender only) |
+| libplacebo master | reconstructs the FEL (needs `PL_API_VER >= 370`) | built by `build-fel-deps.sh` (upstream MR !851, merged to master) |
+| ffmpeg master | `dovi_split` BSF + DoVi stream group → BL/EL packets | built by `build-fel-deps.sh` (upstream) |
 | libdovi | RPU parsing for the EL | built by `build-fel-deps.sh` (quietvoid/dovi_tool) |
 
-**Credits:** the Dolby Vision FEL work is by **kasper93** (Kacper Michajłow) —
-mpv [PR #17932](https://github.com/mpv-player/mpv/pull/17932), from his fork
-<https://github.com/kasper93/mpv> (branch `dv-fel`). This repo only packages and
-links it; see the upstream-tracking refs above / in `deps-fel/pins-fel.env`.
+**Credits:** the Dolby Vision Profile 7 FEL work is by **kasper93** (Kacper
+Michajłow) — mpv [PR #17932](https://github.com/mpv-player/mpv/pull/17932),
+merged into mpv master, building on the matching libplacebo + ffmpeg upstream
+support. This repo only tracks upstream master and packages it.
 
-**The trap:** even with the mpv patch applied, nothing renders in FEL unless mpv
-is *linked* to a libplacebo dv-fel (API ≥ 367) **and** an ffmpeg with
-`dovi_split`. Binaries that launch but only show the base layer were linked
-against a too-old (system) libplacebo. So the FEL build links a dedicated prefix
-**first** on `PKG_CONFIG_PATH`, shadowing the system/Martchus libs.
+**The trap:** FEL renders only if mpv is *linked* to a libplacebo with the FEL
+API (`PL_API_VER >= 370`) **and** an ffmpeg with `dovi_split`. Binaries that
+launch but only show the base layer were linked against a too-old (system)
+libplacebo. So this build links a dedicated prefix **first** on
+`PKG_CONFIG_PATH`, shadowing the system/Martchus libs — until distros ship a
+new-enough libplacebo/ffmpeg (see the exit plan below).
 
-FEL pairs with the **master-tracking** flow only (the patch is generated against
-mpv master); the pinned `v0.41.0` tree is intentionally not supported.
+This pairs with the **master-tracking** flow (mpv master + `patches-master/`);
+the pinned `v0.41.0` tree does not have the feature (it will inherit it once mpv
+0.42.0 is released and the stable track rebases onto it).
 
-Refs come from `deps-fel/pins-fel.env` — policy is to **follow `dv-fel` HEAD**
-(kasper93 force-pushes it ~daily, so pinned SHAs orphan fast).
+Refs come from `deps-fel/pins-fel.env` — now the **canonical upstream master**
+branches (`videolan/libplacebo` and `git.ffmpeg.org/ffmpeg`).
 
 ```sh
-# 1. build the FEL dependency stack into an isolated prefix
+# 1. build the dependency stack (libplacebo + ffmpeg + libdovi) into a prefix
 PREFIX="$PWD/fel-prefix" scripts/build-fel-deps.sh        # native (Linux)
 #    (cross/MinGW: PREFIX=/usr/x86_64-w64-mingw32 CROSS_FILE=cross.ini \
 #                  scripts/build-fel-deps.sh --cross)
 
-# 2. assemble the mpv tree (orender patches + the FEL patch)
-scripts/apply-patches-fel.sh                              # -> build/mpv-master-<sha>
+# 2. assemble the mpv tree (mpv master + orender patches; FEL is native)
+scripts/apply-patches-master.sh                          # -> build/mpv-master-<sha>
 
-# 3. build mpv linked against the FEL prefix (prefix FIRST so it wins)
+# 3. build mpv linked against the prefix (prefix FIRST so it wins)
 export PKG_CONFIG_PATH="$PWD/fel-prefix/lib/pkgconfig:$PKG_CONFIG_PATH"
 export PATH="$PWD/fel-prefix/bin:$PATH"
 cd build/mpv-master-<sha>
@@ -316,14 +321,15 @@ Verify it is really active on a **DV P7 bi-layer** clip (`el_present_flag=1`):
 mpv -v --vo=gpu-next sample.mkv
 #   [mkv] Dolby Vision Profile 7 splitter: ... virtual EL stream 1 (dependent_track)
 #   [vf]  [el_pair] ... dolbyvision/bt.2020/pq
-#   header shows libplacebo API >= 367; NO 'dovi_split BSF not available' / 'Invalid NAL unit size'
+#   header shows libplacebo API >= 370; NO 'dovi_split BSF not available' / 'Invalid NAL unit size'
 ```
 
-`MPV_NO_FEL=1` forces base-layer-only rendering — compare a `screenshot` with
-and without it for an A/B proof (a real P7 clip differs by ~PSNR 20 dB / SSIM 0.7).
+For an A/B proof, disable FEL application with the upstream toggle
+`--vf=format=enhancement-layer=no` and compare a `screenshot` against the default
+(a real P7 clip differs by ~PSNR 20 dB / SSIM 0.7).
 
-CI: opt-in workflow `.github/workflows/build-fel.yml` (Linux, macOS arm64,
-Windows/MinGW; `workflow_dispatch` + weekly). It does **not** touch the
+CI: prerelease workflow `.github/workflows/build-master-beta.yml` (Linux, macOS
+arm64, Windows/MinGW; `workflow_dispatch` + weekly). It does **not** touch the
 nightly/release builds.
 
 **macOS (Apple Silicon):** `build-fel-deps.sh` auto-detects Darwin (skips
@@ -336,7 +342,10 @@ runtime point the loader at it with
 **experimental**: MoltenVK is not yet fully conformant, so FEL reconstruction on
 Apple Silicon is unverified and may not render on every machine.
 
-**Exit plan:** the day mpv #17932 + libplacebo !851 + ffmpeg #23122 all merge and
-ship in releases, delete `patches-fel/`, `deps-fel/`, `scripts/build-fel-deps.sh`,
-`scripts/apply-patches-fel.sh` and `build-fel.yml`, and link the system libs —
-FEL then comes for free. Watch **libplacebo !851** (the gating MR) first.
+**Exit plan:** all three components are already merged upstream; the only
+remaining gate is **releases + distro packaging**. Once a released libplacebo
+(with the FEL API) and a released ffmpeg (with `dovi_split` + the DoVi stream
+group) are packaged by distros, drop the from-source dep build entirely — delete
+`deps-fel/`, `scripts/build-fel-deps.sh`, and the dep-building steps of
+`build-master-beta.yml`, and link the system libs. FEL then comes for free from a
+plain mpv master build. (mpv 0.42.0 additionally brings it to the stable track.)

@@ -1,5 +1,9 @@
 # patched mpv checkouts / build trees (scripts/apply-patches.sh)
 /build/
+# from-source FEL dependency stack (scripts/build-fel-deps.sh) + local build outputs
+/fel-prefix/
+/fel-work/
+/sysroot/
 # in-place meson build dirs
 _b/
 builddir/

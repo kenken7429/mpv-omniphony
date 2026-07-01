@@ -1,52 +1,57 @@
-name: FEL Build
+name: master-beta
 
-# Experimental Dolby Vision Profile 7 FEL build of mpv-omniphony.
+# Shipping master-tracking build of mpv-omniphony: mpv master + the orender
+# spatial-audio patches, with native Dolby Vision Profile 7 FEL.
 #
-# FEL needs three libs that no released package ships (see deps-fel/pins-fel.env
-# and the "Dolby Vision FEL" section of README.md):
-#   libdovi, libplacebo dv-fel (PL_API_VER >= 367), ffmpeg + dovi_split BSF.
-# scripts/build-fel-deps.sh builds them into a prefix; the mpv build then links
-# that prefix FIRST so it shadows the system/Martchus ffmpeg+libplacebo.
+# As of 2026-07-01 FEL is UPSTREAM (mpv PR #17932 merged; libplacebo + ffmpeg
+# carry it in their masters), so there is no fork/patch to track — this build is
+# just "mpv master + orender". It still builds two deps from source because no
+# release ships the FEL API yet: libplacebo master (PL_API_VER >= 370) and ffmpeg
+# master (dovi_split BSF + DoVi stream group). See deps-fel/pins-fel.env and the
+# "Dolby Vision FEL" section of README.md. scripts/build-fel-deps.sh builds them
+# into a prefix; the mpv build links that prefix FIRST so it shadows the
+# system/Martchus ffmpeg+libplacebo.
 #
-# Opt-in only: this does NOT touch integration-build.yml / release.yml. FEL pairs
-# with the master-tracking patch flow (apply-patches-fel.sh), not the pinned
-# v0.41.0 release tree.
+# Opt-in / prerelease channel: this does NOT touch integration-build.yml /
+# release.yml (the stable v0.41.0 track).
 on:
   workflow_dispatch:
   schedule:
     - cron: '0 7 * * 1' # weekly, Monday 07:00 UTC
   push:
-    # Tag a FEL beta (e.g. v0.4.0-fel-beta.1) to build AND publish a pre-release.
+    # Tag a beta (e.g. v0.4.0-fel-beta.1) to build AND publish a pre-release.
+    # (The -fel tag namespace is the established prerelease channel; kept for
+    # release-process continuity even though FEL is no longer a fork.)
     tags:
       - 'v*-fel*'
     paths:
-      - 'patches-fel/**'
+      - 'patches-master/**'
       - 'deps-fel/**'
       - 'scripts/build-fel-deps.sh'
-      - 'scripts/apply-patches-fel.sh'
-      - '.github/workflows/build-fel.yml'
+      - 'scripts/apply-patches-master.sh'
+      - '.github/workflows/build-master-beta.yml'
 
 env:
-  # Rolling (cron/dispatch/path-push) builds track Omniphony main; a tagged FEL
-  # beta pins liborender to the matching release line for reproducibility.
+  # Rolling (cron/dispatch/path-push) builds track Omniphony main; a tagged beta
+  # pins liborender to the matching release line for reproducibility.
   OMNIPHONY_REF: ${{ startsWith(github.ref, 'refs/tags/') && 'v0.4.1' || 'main' }}
 
 jobs:
-  # Resolve the live dv-fel HEAD once so both platforms key their caches on the
-  # same SHA (kasper93 force-pushes dv-fel ~daily).
-  resolve-dvfel:
+  # Resolve the live upstream libplacebo master HEAD once so every platform keys
+  # its dep cache on the same SHA (master moves; this pins the cache per commit).
+  resolve-libplacebo:
     runs-on: ubuntu-latest
     outputs:
       sha: ${{ steps.r.outputs.sha }}
     steps:
       - id: r
         run: |
-          sha=$(git ls-remote https://code.videolan.org/kasper93/libplacebo.git dv-fel | cut -f1)
-          echo "dv-fel HEAD = $sha"
+          sha=$(git ls-remote https://code.videolan.org/videolan/libplacebo.git master | cut -f1)
+          echo "libplacebo master HEAD = $sha"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
   build-linux:
-    needs: resolve-dvfel
+    needs: resolve-libplacebo
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -70,9 +75,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: fel-prefix
-          key: fel-linux-${{ needs.resolve-dvfel.outputs.sha }}-${{ hashFiles('deps-fel/**', 'scripts/build-fel-deps.sh') }}
+          key: fel-linux-${{ needs.resolve-libplacebo.outputs.sha }}-${{ hashFiles('deps-fel/**', 'scripts/build-fel-deps.sh') }}
 
-      - name: Build FEL deps (libdovi + libplacebo dv-fel + ffmpeg dovi_split)
+      - name: Build FEL deps (libdovi + libplacebo master + ffmpeg master)
         if: steps.felcache.outputs.cache-hit != 'true'
         run: |
           PREFIX="$GITHUB_WORKSPACE/fel-prefix" WORK="$GITHUB_WORKSPACE/fel-work" \
@@ -121,11 +126,11 @@ jobs:
           Cflags: -I\${includedir}
           EOF
 
-      - name: Apply orender + FEL patches onto mpv
+      - name: Apply orender patches onto mpv master
         run: |
-          out=$(bash scripts/apply-patches-fel.sh | tee /dev/stderr)
-          sha=$(echo "$out" | sed -n 's/^MPV_FEL_SHA=//p')
-          echo "MPV_DIR=build/mpv-master-$sha" >> "$GITHUB_ENV"
+          bash scripts/apply-patches-master.sh
+          src="$(ls -d build/mpv-master-* | grep -v 'mpv-master-clone$' | head -n1)"
+          echo "MPV_DIR=$src" >> "$GITHUB_ENV"
 
       - name: Build mpv (linked against FEL prefix)
         run: |
@@ -178,7 +183,7 @@ jobs:
   # only "nearly conformant" Vulkan on Apple Silicon — the first green run here is
   # the real proof it renders; visual confirmation is delegated to a tester.
   build-macos:
-    needs: resolve-dvfel
+    needs: resolve-libplacebo
     runs-on: macos-14
     timeout-minutes: 120
     steps:
@@ -187,7 +192,7 @@ jobs:
       - name: Install build deps (mpv + FEL Vulkan stack)
         run: |
           brew update
-          # We build our OWN libplacebo (dv-fel) + ffmpeg (dovi_split) from source,
+          # We build our OWN libplacebo (master) + ffmpeg (master) from source,
           # so do NOT brew-install libplacebo/ffmpeg (they would clash on
           # PKG_CONFIG_PATH). molten-vk + vulkan-loader/-headers give the
           # Vulkan-on-Metal stack libplacebo's FEL path needs; cargo-c builds
@@ -205,9 +210,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: fel-prefix
-          key: fel-macos-${{ needs.resolve-dvfel.outputs.sha }}-${{ hashFiles('deps-fel/**', 'scripts/build-fel-deps.sh') }}
+          key: fel-macos-${{ needs.resolve-libplacebo.outputs.sha }}-${{ hashFiles('deps-fel/**', 'scripts/build-fel-deps.sh') }}
 
-      - name: Build FEL deps (libdovi + libplacebo dv-fel + ffmpeg dovi_split)
+      - name: Build FEL deps (libdovi + libplacebo master + ffmpeg master)
         if: steps.felcache.outputs.cache-hit != 'true'
         run: |
           # Make the brew Vulkan/shaderc/lcms visible so libplacebo's meson probes
@@ -256,11 +261,11 @@ jobs:
           Cflags: -I\${includedir}
           EOF
 
-      - name: Apply orender + FEL patches onto mpv
+      - name: Apply orender patches onto mpv master
         run: |
-          out=$(bash scripts/apply-patches-fel.sh | tee /dev/stderr)
-          sha=$(echo "$out" | sed -n 's/^MPV_FEL_SHA=//p')
-          echo "MPV_DIR=build/mpv-master-$sha" >> "$GITHUB_ENV"
+          bash scripts/apply-patches-master.sh
+          src="$(ls -d build/mpv-master-* | grep -v 'mpv-master-clone$' | head -n1)"
+          echo "MPV_DIR=$src" >> "$GITHUB_ENV"
 
       - name: Build mpv (linked against FEL prefix)
         run: |
@@ -396,7 +401,7 @@ jobs:
           path: out
 
   build-windows:
-    needs: [resolve-dvfel, build-liborender-windows]
+    needs: [resolve-libplacebo, build-liborender-windows]
     runs-on: ubuntu-latest
     container: archlinux:latest
     timeout-minutes: 120
@@ -429,7 +434,7 @@ jobs:
           # read images natively. libbluray is built from source with embedded
           # libudfread in a later step (Martchus's lacks udfread = BD folders
           # only); the DLL-walker in packaging bundles them all.
-          # We build our OWN libplacebo (dv-fel) + ffmpeg (dovi_split) into the
+          # We build our OWN libplacebo (master) + ffmpeg (master) into the
           # MinGW sysroot below, so we intentionally do NOT install
           # mingw-w64-libplacebo / mingw-w64-ffmpeg here.
           rustup default stable
@@ -467,7 +472,7 @@ jobs:
           # (the include/libav* glob misses libswresample/libswscale), so a cache
           # hit left mpv unable to find <libswresample/swresample.h>. Bump to
           # rebuild + recache the prefix with those headers included.
-          key: fel-mingw-v2-${{ needs.resolve-dvfel.outputs.sha }}-${{ hashFiles('deps-fel/**', 'scripts/build-fel-deps.sh') }}
+          key: fel-mingw-v2-${{ needs.resolve-libplacebo.outputs.sha }}-${{ hashFiles('deps-fel/**', 'scripts/build-fel-deps.sh') }}
 
       - name: Write meson cross-file (x86_64-w64-mingw32)
         run: |
@@ -480,7 +485,7 @@ jobs:
           strip = 'x86_64-w64-mingw32-strip'
           pkg-config = 'x86_64-w64-mingw32-pkg-config'
           windres = 'x86_64-w64-mingw32-windres'
-          # libplacebo (dv-fel HEAD) builds a Windows import lib and needs a
+          # libplacebo (master HEAD) builds a Windows import lib and needs a
           # dlltool; meson only probes unprefixed llvm-dlltool/dlltool otherwise.
           dlltool = 'x86_64-w64-mingw32-dlltool'
 
@@ -494,9 +499,9 @@ jobs:
       - name: Build FEL deps into MinGW sysroot (cross)
         if: steps.felcache.outputs.cache-hit != 'true'
         run: |
-          # PREFIX = the MinGW sysroot: our dv-fel libplacebo + dovi_split ffmpeg
-          # shadow Martchus's, so the cross pkg-config and the DLL-walker both pick
-          # ours up with no further wiring.
+          # PREFIX = the MinGW sysroot: our master libplacebo + ffmpeg shadow
+          # Martchus's, so the cross pkg-config and the DLL-walker both pick ours
+          # up with no further wiring.
           PREFIX=/usr/x86_64-w64-mingw32 \
           WORK="$GITHUB_WORKSPACE/fel-work" \
           CROSS_FILE="$GITHUB_WORKSPACE/sysroot/mingw-cross.ini" \
@@ -591,11 +596,11 @@ jobs:
           Cflags: -I\${includedir}
           EOF
 
-      - name: Apply orender + FEL patches onto mpv
+      - name: Apply orender patches onto mpv master
         run: |
-          out=$(bash scripts/apply-patches-fel.sh | tee /dev/stderr)
-          sha=$(echo "$out" | sed -n 's/^MPV_FEL_SHA=//p')
-          echo "MPV_DIR=build/mpv-master-$sha" >> "$GITHUB_ENV"
+          bash scripts/apply-patches-master.sh
+          src="$(ls -d build/mpv-master-* | grep -v 'mpv-master-clone$' | head -n1)"
+          echo "MPV_DIR=$src" >> "$GITHUB_ENV"
 
       - name: Cross-compile mpv (MinGW, linked against FEL sysroot)
         run: |
@@ -649,10 +654,10 @@ jobs:
           name: mpv-omniphony-fel-windows-x86_64
           path: mpv-omniphony-fel-windows-x86_64.zip
 
-  # Publish a pre-release only for a FEL beta tag (e.g. v0.4.0-fel-beta.1).
+  # Publish a pre-release only for a beta tag (e.g. v0.4.0-fel-beta.1).
   # Mirrors integration-build.yml's publish job, but keyed on the pushed tag.
   # Skipped for cron/dispatch/path-push runs (those just upload CI artifacts).
-  publish-fel-beta:
+  publish-beta:
     if: startsWith(github.ref, 'refs/tags/')
     needs: [build-linux, build-macos, build-windows]
     runs-on: ubuntu-latest
@@ -669,17 +674,18 @@ jobs:
         with:
           name: mpv-omniphony-fel-windows-x86_64
 
-      - name: Publish FEL beta pre-release
+      - name: Publish master beta pre-release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          name: 'mpv-omniphony ${{ github.ref_name }} (Dolby Vision FEL beta)'
+          name: 'mpv-omniphony ${{ github.ref_name }} — master (spatial audio + Dolby Vision P7 FEL)'
           prerelease: true
           make_latest: false
           body: |
-            Experimental **Dolby Vision Profile 7 FEL** build of mpv-omniphony.
-            Built on mpv **master** (master-tracking patch flow) with liborender
-            from Omniphony `${{ env.OMNIPHONY_REF }}`. **Beta — NOT a stable release.**
+            Master-tracking build of mpv-omniphony: mpv **master** + the orender
+            spatial-audio patches, with **native Dolby Vision Profile 7 FEL**.
+            liborender from Omniphony `${{ env.OMNIPHONY_REF }}`.
+            **Beta — NOT a stable release.**
 
             **NOT bundled:** the decoder bridge plugin (`*_bridge.dll` / `.so`).
             Provide it via `--ad-orender-bridge-path=<absolute path>` or drop it
@@ -693,11 +699,11 @@ jobs:
             the bundled MoltenVK ICD:
             `VK_ICD_FILENAMES=<dir>/share/vulkan/icd.d/MoltenVK_icd.json`.
 
-            **Credits:** Dolby Vision FEL support is upstream work by
+            **Credits:** Dolby Vision Profile 7 FEL support is upstream mpv work by
             [kasper93](https://github.com/kasper93) (Kacper Michajłow) — mpv
-            [PR #17932](https://github.com/mpv-player/mpv/pull/17932), from his
-            fork [github.com/kasper93/mpv](https://github.com/kasper93/mpv)
-            (branch `dv-fel`). This build only packages it.
+            [PR #17932](https://github.com/mpv-player/mpv/pull/17932), merged into
+            mpv master (v0.42.0), building on the matching libplacebo + ffmpeg
+            upstream support. This build tracks upstream master and packages it.
           files: |
             mpv-omniphony-fel-linux-x86_64.zip
             mpv-omniphony-fel-macos-arm64.zip
