@@ -51,46 +51,35 @@ jobs:
         env:
           RUSTFLAGS: -D warnings
 
-      - name: Install liborender into sysroot
+      - name: Stage liborender (bundled fallback)
+        # mpv no longer links liborender — it dlopens it at runtime, preferring
+        # a Studio-deployed engine and falling back to this bundled copy found
+        # next to the executable. Name the file after its own soname
+        # (liborender.so.<ABI major>, stamped by orender_ffi/build.rs).
         run: |
-          mkdir -p sysroot/usr/lib sysroot/usr/include sysroot/usr/lib/pkgconfig
+          mkdir -p staging
           rel=omniphony/omniphony-renderer/target/release
-          cp "$rel/liborender.so" sysroot/usr/lib/liborender.so.0
-          ln -sf liborender.so.0 sysroot/usr/lib/liborender.so
-          cp omniphony/omniphony-renderer/orender_ffi/include/orender.h sysroot/usr/include/orender.h
-          cat > sysroot/usr/lib/pkgconfig/orender.pc <<EOF
-          prefix=${{ github.workspace }}/sysroot/usr
-          libdir=\${prefix}/lib
-          includedir=\${prefix}/include
-
-          Name: orender
-          Description: Omniphony renderer C library
-          Version: 0.99.0
-          Libs: -L\${libdir} -lorender
-          Cflags: -I\${includedir}
-          EOF
+          soname=$(objdump -p "$rel/liborender.so" | awk '/SONAME/ {print $2}')
+          cp "$rel/liborender.so" "staging/${soname:?no SONAME in liborender.so}"
+          cp omniphony/omniphony-renderer/orender_ffi/include/orender.h staging/
 
       - name: Apply patches onto mpv
         run: bash scripts/apply-patches.sh "$MPV_TAG"
 
       - name: Build mpv with ad_orender
         run: |
-          export PKG_CONFIG_PATH="${{ github.workspace }}/sysroot/usr/lib/pkgconfig"
-          export LD_LIBRARY_PATH="${{ github.workspace }}/sysroot/usr/lib"
+          # liborender is a pure runtime dependency (dlopen) — nothing to point
+          # the build at.
           cd "build/mpv-${MPV_TAG}"
           meson setup _b -Dorender=enabled -Dlibbluray=enabled -Ddvdnav=enabled
           meson compile -C _b
 
       - name: Package (zip)
         run: |
-          mkdir -p staging
           cp "build/mpv-${MPV_TAG}/_b/mpv" staging/
-          cp sysroot/usr/lib/liborender.so.0 staging/
-          cp sysroot/usr/include/orender.h staging/
           cp README.md staging/
           cd staging
-          zip -r "../mpv-omniphony-integration-linux-x86_64.zip" \
-            mpv liborender.so.0 orender.h README.md
+          zip -r "../mpv-omniphony-integration-linux-x86_64.zip" .
 
       - uses: actions/upload-artifact@v6
         with:
@@ -222,26 +211,9 @@ jobs:
           name: liborender-windows-from-source
           path: /tmp/liborender
 
-      - name: Install liborender into MinGW sysroot
-        run: |
-          SYS=/usr/x86_64-w64-mingw32
-          install -Dm755 /tmp/liborender/orender.dll "$SYS/bin/orender.dll"
-          install -Dm644 /tmp/liborender/orender.h   "$SYS/include/orender.h"
-          install -Dm755 /tmp/liborender/orender.dll "$SYS/lib/orender.dll"
-          install -d "$SYS/lib/pkgconfig"
-          cat > "$SYS/lib/pkgconfig/orender.pc" <<EOF
-          prefix=$SYS
-          libdir=\${prefix}/lib
-          includedir=\${prefix}/include
-
-          Name: orender
-          Description: Omniphony renderer C library
-          Version: 0.99.0
-          Libs: -L\${libdir} -lorender
-          Cflags: -I\${includedir}
-          EOF
-          x86_64-w64-mingw32-pkg-config --modversion orender
-
+      # liborender is a pure runtime dependency now (mpv dlopens it against its
+      # vendored ABI header) — nothing to install into the MinGW sysroot; the
+      # downloaded orender.dll goes straight into the zip next to mpv.exe.
       - name: Apply patches onto mpv
         run: bash scripts/apply-patches.sh "$MPV_TAG"
 
@@ -289,8 +261,8 @@ jobs:
           mkdir -p staging
           cp "build/mpv-${MPV_TAG}/_b/mpv.exe" staging/
           cp "build/mpv-${MPV_TAG}/_b/mpv.com" staging/
-          cp "$SYS/bin/orender.dll" staging/
-          cp "$SYS/include/orender.h" staging/
+          cp /tmp/liborender/orender.dll staging/
+          cp /tmp/liborender/orender.h staging/
           cp README.md staging/
           should_skip() {
             case "$1" in
@@ -372,37 +344,25 @@ jobs:
         env:
           RUSTFLAGS: -D warnings
 
-      - name: Install liborender into sysroot
+      - name: Stage liborender (bundled fallback)
+        # Runtime dependency only: mpv dlopens it, preferring a Studio-deployed
+        # engine and falling back to the copy dropped into Contents/MacOS below.
         run: |
-          mkdir -p sysroot/usr/lib sysroot/usr/include sysroot/usr/lib/pkgconfig
-          rel=omniphony/omniphony-renderer/target/release
-          # No soname symlink needed on macOS; the release dylib already carries
-          # an `@rpath/liborender.dylib` install name (orender_ffi/build.rs).
-          cp "$rel/liborender.dylib" sysroot/usr/lib/liborender.dylib
-          cp omniphony/omniphony-renderer/orender_ffi/include/orender.h sysroot/usr/include/orender.h
-          # Hand-write a minimal pkg-config so mpv's meson finds liborender.
-          cat > sysroot/usr/lib/pkgconfig/orender.pc <<EOF
-          prefix=${{ github.workspace }}/sysroot/usr
-          libdir=\${prefix}/lib
-          includedir=\${prefix}/include
-
-          Name: orender
-          Description: Omniphony renderer C library
-          Version: 0.99.0
-          Libs: -L\${libdir} -lorender
-          Cflags: -I\${includedir}
-          EOF
+          mkdir -p sysroot/usr/lib
+          cp omniphony/omniphony-renderer/target/release/liborender.dylib \
+             sysroot/usr/lib/liborender.dylib
 
       - name: Apply patches onto mpv
         run: bash scripts/apply-patches.sh "$MPV_TAG"
 
       - name: Build mpv with ad_orender
         run: |
-          # sysroot + Homebrew pkgconfig (incl. vulkan-loader) for liborender, the
-          # brew ffmpeg/libass/libplacebo/luajit stack, and the Vulkan loader.
+          # Homebrew pkgconfig (incl. vulkan-loader) for the brew
+          # ffmpeg/libass/libplacebo/luajit stack and the Vulkan loader;
+          # liborender is a pure runtime dependency and needs nothing here.
           # Force cocoa/swift/vulkan so the GUI + Vulkan(MoltenVK) display stack is
           # built (fail loud, not a no-video bundle).
-          export PKG_CONFIG_PATH="${{ github.workspace }}/sysroot/usr/lib/pkgconfig:$(brew --prefix)/lib/pkgconfig:$(brew --prefix vulkan-loader)/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+          export PKG_CONFIG_PATH="$(brew --prefix)/lib/pkgconfig:$(brew --prefix vulkan-loader)/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
           cd "build/mpv-${MPV_TAG}"
           # Disc playback (BD/DVD/ISO); brew's libbluray pulls libudfread → raw
           # BD-ISO. mpv's macos-bundle target relocates these in the next step.
@@ -412,10 +372,10 @@ jobs:
 
       - name: Bundle into mpv.app (mpv's native macos-bundle)
         run: |
-          # mpv's upstream osxbundle.py + dylib_unhell.py relocate every dylib
-          # (liborender + the brew ffmpeg stack) into the app and wire MoltenVK +
-          # its ICD correctly — the same fix validated for the stable release (#22).
-          export PKG_CONFIG_PATH="${{ github.workspace }}/sysroot/usr/lib/pkgconfig:$(brew --prefix)/lib/pkgconfig:$(brew --prefix vulkan-loader)/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+          # mpv's upstream osxbundle.py + dylib_unhell.py relocate every linked
+          # dylib (the brew ffmpeg stack) into the app and wire MoltenVK + its
+          # ICD correctly — the same fix validated for the stable release (#22).
+          export PKG_CONFIG_PATH="$(brew --prefix)/lib/pkgconfig:$(brew --prefix vulkan-loader)/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
           cd "build/mpv-${MPV_TAG}"
           meson compile -C _b macos-bundle   # -> _b/mpv.app
 
@@ -427,6 +387,11 @@ jobs:
           "$PB" -c "Set :CFBundleIdentifier fr.mgth.mpv-omniphony" mpv-omniphony.app/Contents/Info.plist
           "$PB" -c "Set :CFBundleName mpv-omniphony"               mpv-omniphony.app/Contents/Info.plist
           "$PB" -c "Add :CFBundleDisplayName string mpv-omniphony" mpv-omniphony.app/Contents/Info.plist 2>/dev/null || true
+          # mpv no longer links liborender, so the bundler does not relocate it;
+          # drop the fallback copy next to the binary ourselves (the runtime
+          # loader's exe-dir candidate is Contents/MacOS), before the codesign.
+          cp "$GITHUB_WORKSPACE/sysroot/usr/lib/liborender.dylib" \
+             mpv-omniphony.app/Contents/MacOS/liborender.dylib
           codesign --force --deep --sign - mpv-omniphony.app
           ./mpv-omniphony.app/Contents/MacOS/mpv --version
           ./mpv-omniphony.app/Contents/MacOS/mpv --gpu-api=help | grep -qi vulkan \

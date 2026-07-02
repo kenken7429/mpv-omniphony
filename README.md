@@ -21,6 +21,12 @@ This repo holds **only** the mpv-side integration: the decoder source
 CI. The renderer itself (`liborender.so` + the decoder bridge) is built and
 packaged from the `Omniphony` repo (`packaging/arch/`).
 
+mpv loads liborender at **runtime** (dlopen + ABI version handshake) — building
+mpv needs no engine at all, and an updated engine (e.g. deployed by Omniphony
+Studio) is picked up without rebuilding mpv. The library search order and the
+`--ad-orender-library` option are documented in the
+[usage guide](https://github.com/mgth/Omniphony/blob/main/docs/mpv-omniphony.md).
+
 ## Layout
 
 ```
@@ -44,7 +50,7 @@ packaging/PKGBUILD-master   # Arch -git package tracking master HEAD
 # 1. assemble a patched mpv tree at build/mpv-v0.41.0 (clones the pinned tag):
 scripts/apply-patches.sh v0.41.0
 
-# 2. build it (needs liborender + the bridge installed):
+# 2. build it (no liborender needed at build time — it is dlopen'd at runtime):
 cd build/mpv-v0.41.0
 meson setup _b -Dorender=enabled && meson compile -C _b
 
@@ -108,9 +114,9 @@ conflicts with both stock `mpv` and the stable `mpv-omniphony` — install one.
 
 `mpv-omniphony` is a patch-set fork of
 [mpv](https://github.com/mpv-player/mpv) (**GPL-2.0-or-later**, © the mpv
-authors) that adds the `ad_orender` audio decoder. `ad_orender` links
-**`liborender`** from [Omniphony](https://github.com/mgth/Omniphony), which is
-**GPL-3.0-or-later**.
+authors) that adds the `ad_orender` audio decoder. `ad_orender` loads
+**`liborender`** from [Omniphony](https://github.com/mgth/Omniphony) at
+runtime, which is **GPL-3.0-or-later**.
 
 - Our first-party additions — `src/ad_orender.c`, the integration commits in
   `patches/` / `patches-master/`, and the build tooling — are
