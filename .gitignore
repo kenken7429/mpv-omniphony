@@ -1,5 +1,10 @@
 # patched mpv checkouts / build trees (scripts/apply-patches.sh)
 /build/
+# local dev prefixes/checkouts for the master-track build tooling
+/fel-prefix/
+/fel-work/
+# stale local liborender sysroot (nothing needs it since the dlopen change)
+/sysroot/
 # in-place meson build dirs
 _b/
 builddir/

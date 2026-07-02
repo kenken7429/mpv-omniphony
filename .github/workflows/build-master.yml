@@ -34,9 +34,8 @@ jobs:
             libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev libswscale-dev \
             libass-dev liblua5.2-dev libx11-dev python3-jinja2
 
-      - name: Build & install a mock liborender
-        run: bash .github/scripts/mock-liborender.sh
-
+      # No liborender needed at build time: the patched mpv dlopens it at
+      # runtime against its vendored ABI header (common/orender_abi.h).
       - name: Apply patches onto mpv master HEAD
         run: bash scripts/apply-patches-master.sh
 

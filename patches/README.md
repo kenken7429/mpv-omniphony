@@ -2,20 +2,31 @@
 
 These `.patch` files are **generated** from the mpv fork's `orender` branch by
 `scripts/regenerate-patches.sh` (`git format-patch v0.41.0..orender`). Do not
-hand-edit them — edit the fork, then regenerate. `src/ad_orender.c` is the
-readable copy of the decoder source from which patch 0001 is produced; keep the
-two in sync.
+hand-edit them — edit the fork, then regenerate (and regenerate
+`../patches-master/` from `orender-master` in the same change, so both tracks
+carry the same integration). `src/ad_orender.c` is the readable copy of the
+decoder source; keep it in sync with the fork.
 
-Generated against mpv **v0.41.0** (`filters/f_decoder_wrapper.{c,h}` is the
-current decoder registry; mpv ≤ 0.36's `ad_functions`/`ad.c` model is gone):
+Generated against mpv **v0.41.0**. What the series adds, by area:
 
-| Patch | Touches | What it does |
-|-------|---------|--------------|
-| `0001-audio-add-ad_orender-decoder-*.patch` | `audio/decode/ad_orender.c` | Adds the `mp_filter`/`mp_decoder_fns` decoder. |
-| `0002-audio-register-ad_orender-*.patch` | `filters/f_decoder_wrapper.{c,h}` | `extern … ad_orender;` + select it for TrueHD when `--ad` lists `orender` (`HAVE_ORENDER`-guarded). |
-| `0003-build-detect-orender-*.patch` | `meson.build`, `meson.options` | `orender` feature option, `dependency('orender', '>= 0.1')`, and `sources += files('audio/decode/ad_orender.c')` when found. |
+- **Spatial decoder** — `audio/decode/ad_orender.{c,h}`, registered in
+  `filters/f_decoder_wrapper.{c,h}`: decodes TrueHD/E-AC-3/AC-3/DTS through the
+  Omniphony engine (VBAP object rendering), with live host/spatial mode
+  switching driven by Studio over OSC.
+- **Runtime engine loading** — `common/orender_dl.{c,h}` +
+  `common/orender_abi.h` (vendored cbindgen header): liborender is dlopen'd at
+  runtime with an ABI-major handshake, searching `--ad-orender-library` /
+  `$ORENDER_LIBRARY` → the Studio-deployed per-user library → next to the mpv
+  executable → the system loader. mpv builds with **no** liborender/pkg-config
+  present, and an incompatible engine degrades to native decode instead of
+  breaking the build or the player.
+- **Spatial overlay** — `player/orender_overlay.c`: built-in client that pulls
+  the engine's ASS overlay + BGRA heatmap (replaces the old Lua shim).
+- **Audio outputs** — ASIO driver (`ao_asio`), WASAPI/waveext multichannel
+  layout advertisement (5.1.4/7.1.4/9.1.6).
+- **Build** — `orender` meson feature (source-only since the dlopen change:
+  no build-time dependency).
 
-Validated on v0.41.0: `meson setup -Dorender=enabled` detects liborender and
-both `ad_orender.c` and `f_decoder_wrapper.c` compile (object-level). A full
-link + playback is the downstream build's job (needs liborender + the bridge
-installed). The meson option is also mirrored in `../meson-options.txt`.
+CI validates the build with no engine installed plus a stub-library handshake
+matrix (`.github/scripts/stub-liborender.sh`); full playback is the downstream
+job of a real engine + decoder bridge.
