@@ -9,7 +9,8 @@
  * decoder wrapper in host mode. It stays selected for the whole track and owns
  * the orender engine the whole time, so the engine's OSC listener — and thus the
  * Studio connection — stays alive and keeps receiving the live
- * `channel_render_mode` switch. Each packet is routed on that live mode:
+ * `channel_render_mode` switch. Object content stays on the spatial path;
+ * channel-based content is routed on the live mode:
  *
  *   - spatial : decode + VBAP-render through the engine (objects, or the virtual
  *               bed for plain channel content);
@@ -27,6 +28,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
+
+#include <libavcodec/avcodec.h>
 
 #include "mpv_talloc.h"
 #include "audio/aframe.h"
@@ -101,10 +104,15 @@ struct priv {
     struct mp_chmap chmap;
     bool checked_spatial;       // built the output chmap for the spatial path
     int last_mapping;           // last orender_channel_mapping() the chmap was built for (live switch)
+    bool source_spatial;        // container/bridge identified object content
+    bool source_classified;     // first decoded presentation has been inspected
     bool force_host;            // engine unusable (no layout / create failed): always native
     int host_decoder_idx;       // HOST_DEC_LAVC (PCM) or HOST_DEC_SPDIF (passthrough)
     struct mp_decoder *native;  // lazily-created native child decoder for host mode
     int active_path;            // PATH_* of the last packet, for clean transitions
+    struct mp_frame *probe_packets; // packets retained while classifying the source
+    int num_probe_packets;
+    int probe_packet_pos;
     /* Track-info codec profile (shift+I) for the spatial path. Two concerns:
      *
      *  - Lifetime: the core thread reads codec_profile from the track list
@@ -216,6 +224,28 @@ static const char *profile_base(const char *codec, bool has_objects)
     if (strcmp(codec, "dts") == 0)
         return has_objects ? "DTS:X" : "DTS";
     return codec;
+}
+
+/* FFmpeg can expose DTS:X directly in AVCodecParameters.profile, letting the
+ * demuxer identify it before either decoder consumes a packet. Use that early
+ * hint when available; otherwise the retained-packet probe below lets the
+ * bridge classify the presentation without losing the native fallback audio. */
+static bool codec_is_spatial_hint(const struct mp_codec_params *codec)
+{
+    const char *profile = codec->codec_profile;
+    if (profile && (strstr(profile, "DTS:X") || strstr(profile, "Atmos")))
+        return true;
+
+    int av_profile = codec->lav_codecpar ? codec->lav_codecpar->profile
+                                         : AV_PROFILE_UNKNOWN;
+    if (strcmp(codec->codec, "dts") == 0)
+        return av_profile == AV_PROFILE_DTS_HD_MA_X ||
+               av_profile == AV_PROFILE_DTS_HD_MA_X_IMAX;
+    if (strcmp(codec->codec, "eac3") == 0)
+        return av_profile == AV_PROFILE_EAC3_DDP_ATMOS;
+    if (strcmp(codec->codec, "truehd") == 0)
+        return av_profile == AV_PROFILE_TRUEHD_ATMOS;
+    return false;
 }
 
 /* Recompose codec_profile from the engine's live presentation info (Atmos flag,
@@ -356,6 +386,14 @@ static bool ensure_native_child(struct mp_filter *da, struct priv *p)
     return true;
 }
 
+static void clear_probe_packets(struct priv *p)
+{
+    for (int i = p->probe_packet_pos; i < p->num_probe_packets; i++)
+        mp_frame_unref(&p->probe_packets[i]);
+    p->num_probe_packets = 0;
+    p->probe_packet_pos = 0;
+}
+
 /* Host mode: pump the native child — forward packets in, decoded frames out. */
 static void process_host(struct mp_filter *da, struct priv *p)
 {
@@ -373,21 +411,40 @@ static void process_host(struct mp_filter *da, struct priv *p)
         mp_pin_in_write(da->ppins[1], frame);
     }
     // Feed input packets to the child.
-    if (mp_pin_can_transfer_data(child_in, da->ppins[0])) {
+    if (p->probe_packet_pos < p->num_probe_packets &&
+        mp_pin_in_needs_data(child_in))
+    {
+        struct mp_frame frame = p->probe_packets[p->probe_packet_pos];
+        p->probe_packets[p->probe_packet_pos++] = MP_NO_FRAME;
+        mp_pin_in_write(child_in, frame);
+        if (p->probe_packet_pos == p->num_probe_packets) {
+            p->num_probe_packets = 0;
+            p->probe_packet_pos = 0;
+        }
+    } else if (mp_pin_can_transfer_data(child_in, da->ppins[0])) {
         struct mp_frame frame = mp_pin_out_read(da->ppins[0]);
         mp_pin_in_write(child_in, frame);
     }
 }
 
 /* Spatial mode: decode + VBAP-render through the engine. */
-static void process_spatial(struct mp_filter *da, struct priv *p)
+static void process_spatial(struct mp_filter *da, struct priv *p, bool probe_host)
 {
     if (!mp_pin_can_transfer_data(da->ppins[1], da->ppins[0]))
         return;
 
     struct mp_frame inframe = mp_pin_out_read(da->ppins[0]);
     if (inframe.type == MP_FRAME_EOF) {
-        mp_pin_in_write(da->ppins[1], inframe);
+        if (probe_host && p->num_probe_packets > 0) {
+            MP_TARRAY_APPEND(p, p->probe_packets, p->num_probe_packets, inframe);
+            p->source_classified = true;
+            p->active_path = PATH_HOST;
+            p->dl->overlay_set_rendering(0);
+            p->dl->overlay_clear();
+            process_host(da, p);
+        } else {
+            mp_pin_in_write(da->ppins[1], inframe);
+        }
         return;
     } else if (inframe.type != MP_FRAME_PACKET) {
         if (inframe.type) {
@@ -428,6 +485,43 @@ static void process_spatial(struct mp_filter *da, struct priv *p)
     if (ret > 0) {
         MP_WARN(da, "orender output buffer too small; dropping packet\n");
         goto done;
+    }
+
+    if (probe_host) {
+        /* Keep ownership of every packet until the bridge can classify the
+         * first decoded presentation. If it is a plain channel stream, replay
+         * these packets into the native decoder so probing loses no audio. */
+        MP_TARRAY_APPEND(p, p->probe_packets, p->num_probe_packets, inframe);
+        inframe = MP_NO_FRAME;
+        mpkt = NULL;
+    }
+
+    /* Classify only from *decoded* frames: before the first frame,
+     * has_objects reports the bridge's container-level guess (e.g. TrueHD
+     * assumes objects until proven otherwise), and latching that guess is
+     * exactly the failure the live-fact contract forbids. */
+    int spatial = p->dl->has_objects(p->renderer);
+    if (spatial == 1 && n_frames > 0) {
+        p->source_spatial = true;
+        p->source_classified = true;
+        clear_probe_packets(p);
+        p->dl->overlay_set_rendering(1);
+    } else if (probe_host && n_frames > 0) {
+        /* The bridge produced a real non-object frame: classification is now
+         * definitive. The decoded fact overrides the provisional container
+         * hint — this presentation is channel-based, not object content — so
+         * clear source_spatial too, else the next packet's routing
+         * (host = !source_spatial && …) would bounce it back to the spatial
+         * path and render HostPassthrough silence. Discard the probe render
+         * and replay from packet zero via the native child. */
+        p->source_spatial = false;
+        p->source_classified = true;
+        p->active_path = PATH_HOST;
+        p->dl->overlay_set_rendering(0);
+        p->dl->overlay_clear();
+        talloc_free(samples);
+        process_host(da, p);
+        return;
     }
 
     if (n_frames == 0)
@@ -546,11 +640,12 @@ static void ad_orender_process(struct mp_filter *da)
 {
     struct priv *p = da->priv;
 
-    /* Route on the engine's live channel_render_mode (0 host, 1 spatial), which
-     * Studio flips over OSC. Reading it per packet is a cheap in-memory call, not
-     * a poll. `force_host` (engine unusable) pins host. */
+    /* The live channel mode only selects what to do with channel-based sources.
+     * Object content identified by the container or bridge always stays on the
+     * spatial path, independently of Studio's "Spatialize 2D sources" toggle. */
     int mode = p->renderer ? p->dl->channel_mode(p->renderer) : 0;
-    bool host = p->force_host || mode != 1;
+    bool probe_host = !p->force_host && !p->source_classified && mode != 1;
+    bool host = p->force_host || (!probe_host && !p->source_spatial && mode != 1);
     int path = host ? PATH_HOST : PATH_SPATIAL;
 
     /* On a mode flip, flush stale state on the side we switch *to* so it starts
@@ -584,7 +679,7 @@ static void ad_orender_process(struct mp_filter *da)
     if (host)
         process_host(da, p);
     else
-        process_spatial(da, p);
+        process_spatial(da, p, probe_host);
 }
 
 static void ad_orender_reset(struct mp_filter *da)
@@ -594,6 +689,7 @@ static void ad_orender_reset(struct mp_filter *da)
         p->dl->reset(p->renderer);
     if (p->native && p->native->f)
         mp_filter_reset(p->native->f);
+    clear_probe_packets(p);
     p->checked_spatial = false;
     p->active_path = PATH_NONE;
 }
@@ -601,6 +697,7 @@ static void ad_orender_reset(struct mp_filter *da)
 static void ad_orender_destroy(struct mp_filter *da)
 {
     struct priv *p = da->priv;
+    clear_probe_packets(p);
     /* The native child is a talloc child of `da` and is freed with it; the
      * engine is an FFI handle we must release explicitly. The codec profile
      * buffer is a talloc child of p->codec (not of `da`), so it correctly
@@ -642,7 +739,20 @@ static struct mp_decoder *create(struct mp_filter *parent,
     p->codec = codec;
     p->sample_rate = codec->samplerate;
     p->active_path = PATH_NONE;
+    p->source_spatial = codec_is_spatial_hint(codec);
+    /* The hint is provisional: routing follows the *decoded* fact (the
+     * engine's has_objects is live), so classification only happens once the
+     * bridge has produced frames. A container-profiled DTS:X track whose
+     * presentation is fixed channels (no dynamic objects) must still probe
+     * and fall back to the native path in host mode — terminally trusting
+     * the hint here left the embedded engine passing through silence
+     * forever (channel-object contract, phase 5). */
+    p->source_classified = false;
     p->public.f = da;
+
+    MP_VERBOSE(da, "input profile: %s (early spatial=%s)\n",
+               codec->codec_profile ? codec->codec_profile : "unknown",
+               p->source_spatial ? "yes" : "no");
 
     struct ad_orender_params *opts =
         mp_get_config_group(da, da->global, &ad_orender_conf);
@@ -711,8 +821,8 @@ static struct mp_decoder *create(struct mp_filter *parent,
 
     /* Match the overlay's initial visibility to the starting mode, so it does not
      * flash the wireframe cube before the first packet picks the path. */
-    bool start_host = p->force_host ||
-                      !p->renderer || p->dl->channel_mode(p->renderer) != 1;
+    bool start_host = p->force_host || !p->renderer ||
+                      (!p->source_spatial && p->dl->channel_mode(p->renderer) != 1);
     p->dl->overlay_set_rendering(start_host ? 0 : 1);
 
     /* Official-cased codec name. No "(orender)" suffix: the decoder already shows

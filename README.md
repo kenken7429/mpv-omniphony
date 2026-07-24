@@ -75,9 +75,14 @@ Develop the integration in a fork of `mpv-player/mpv`:
 git remote add upstream https://github.com/mpv-player/mpv.git
 git fetch upstream
 git checkout master && git merge upstream/master
-git checkout orender && git rebase master       # resolve drift
-scripts/regenerate-patches.sh /path/to/mpv-fork # refresh patches/ here
+git checkout orender
+# Integrate the decoder changes here, but keep this branch based on v0.41.0.
+scripts/regenerate-patches.sh /path/to/mpv-fork v0.41.0
 ```
+
+Do not rebase `orender` onto `master`: the stable patch series is intentionally
+generated from the pinned `v0.41.0` base. Only `orender-master`, described
+below, follows current upstream `master`.
 
 ## Tracking mpv master
 
