@@ -26,7 +26,7 @@ index ad2a221861..f265d0ddc0 100644
 +++ b/filters/f_swresample.c
 @@ -217,7 +217,18 @@ static bool configure_lavrr(struct priv *p, bool verbose)
          mp_aframe_set_chmap(p->pool_fmt, &map_out);
- 
+
      AVChannelLayout in_layout, out_layout;
 -    mp_chmap_to_av_layout_custom(&in_layout, &map_in);
 +    // orender: keep by-index (positionless) output byte-for-byte. The guard

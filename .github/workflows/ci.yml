@@ -22,12 +22,8 @@ jobs:
             libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev libswscale-dev \
             libass-dev libplacebo-dev liblua5.2-dev libx11-dev
 
-      # liborender is not in apt. For CI we install a *mock* that satisfies the
-      # header + soname so the patched mpv links; real playback is tested
-      # downstream against the actual package.
-      - name: Build & install a mock liborender
-        run: bash .github/scripts/mock-liborender.sh
-
+      # No liborender needed at build time: the patched mpv dlopens it at
+      # runtime against its vendored ABI header (common/orender_abi.h).
       - name: Apply patches onto pinned mpv
         run: bash scripts/apply-patches.sh "$MPV_TAG"
 
@@ -41,3 +37,31 @@ jobs:
         run: |
           cd "build/mpv-${MPV_TAG}"
           ./_b/mpv --version
+
+      # Exercise the runtime loader + ABI handshake with stub libraries (the
+      # stub decodes nothing — real playback is validated downstream against
+      # the actual engine). `--idle=once` never exits on its own, hence the
+      # timeouts; mpv getting killed by them is expected and ignored.
+      - name: Loader handshake matrix
+        run: |
+          cd "build/mpv-${MPV_TAG}"
+          mpv_grep() { (timeout 15 ./_b/mpv --no-config --idle=once \
+                          --vo=null --ao=null -v "$@" 2>&1 || true); }
+
+          echo "== no library anywhere: clean candidate walk, spatial off"
+          mpv_grep | grep -q "orender: no usable liborender found"
+
+          echo "== compatible stub (major 0) via explicit path: loads"
+          bash "$GITHUB_WORKSPACE/.github/scripts/stub-liborender.sh" /tmp/stub-ok/liborender.so 0 99
+          mpv_grep --ad-orender-library=/tmp/stub-ok/liborender.so \
+            | grep -q "orender: loaded liborender ABI 0.99"
+
+          echo "== incompatible stub (major 99) via explicit path: hard fail"
+          bash "$GITHUB_WORKSPACE/.github/scripts/stub-liborender.sh" /tmp/stub-bad/liborender.so 99 0
+          mpv_grep --ad-orender-library=/tmp/stub-bad/liborender.so \
+            | grep -q "ABI major 99"
+
+          echo "== incompatible stub next to mpv: rejected, falls through"
+          cp /tmp/stub-bad/liborender.so _b/liborender.so.0
+          mpv_grep | grep -q "orender: rejecting.*next to mpv.*ABI major 99"
+          rm _b/liborender.so.0

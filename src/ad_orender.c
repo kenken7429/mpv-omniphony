@@ -9,7 +9,8 @@
  * decoder wrapper in host mode. It stays selected for the whole track and owns
  * the orender engine the whole time, so the engine's OSC listener — and thus the
  * Studio connection — stays alive and keeps receiving the live
- * `channel_render_mode` switch. Each packet is routed on that live mode:
+ * `channel_render_mode` switch. Object content stays on the spatial path;
+ * channel-based content is routed on the live mode:
  *
  *   - spatial : decode + VBAP-render through the engine (objects, or the virtual
  *               bed for plain channel content);
@@ -28,6 +29,8 @@
 #include <stdint.h>
 #include <string.h>
 
+#include <libavcodec/avcodec.h>
+
 #include "mpv_talloc.h"
 #include "audio/aframe.h"
 #include "audio/chmap.h"
@@ -41,28 +44,20 @@
 #include "filters/filter_internal.h"
 #include "options/m_config.h"
 
-#include <orender.h>
+#include "audio/decode/ad_orender.h"
+#include "common/orender_abi.h"
+#include "common/orender_dl.h"
 
-/* --ad-orender-* options. All paths/hosts default to empty → passed to
- * liborender as NULL, which then resolves the shared omniphony config
- * (~/.config/omniphony/config.yaml, the same one the CLI + studio use) for the
- * bridge path, speaker layout, and OSC settings. These options only override
- * the config on a per-mpv-invocation basis. */
+/* The option struct lives in ad_orender.h (shared with the liborender runtime
+ * loader, which needs the library path before any decoder exists). */
 #define OPT_BASE_STRUCT struct ad_orender_params
-struct ad_orender_params {
-    char *config_path;          // override render config YAML (else shared default)
-    char *bridge_path;          // override render.bridge_path
-    bool osc;                   // force OSC on (else follows config render.osc)
-    int osc_port;               // outgoing/monitoring port (0 = config/default)
-    int osc_rx_port;            // incoming control port  (0 = config/default 9000)
-    char *osc_bind;             // listener bind address (else config/default)
-    char *osc_monitor_target;   // monitoring host (else config/default)
-    int channel_mode_idx;       // initial render override: 0=auto 1=host 2=spatial
-    int host_decoder_idx;       // host-mode native decoder: 0=lavc 1=spdif
-};
 
 const struct m_sub_options ad_orender_conf = {
     .opts = (const m_option_t[]) {
+        /* Explicit liborender path, overriding the loader's search order
+         * (studio install → next to mpv → system). If set and unusable, the
+         * loader fails hard instead of falling back — see common/orender_dl.c. */
+        {"library", OPT_STRING(library_path), .flags = M_OPT_FILE},
         {"config", OPT_STRING(config_path), .flags = M_OPT_FILE},
         {"bridge-path", OPT_STRING(bridge_path), .flags = M_OPT_FILE},
         {"osc", OPT_BOOL(osc)},
@@ -97,29 +92,27 @@ static const char *nz(const char *s) { return (s && s[0]) ? s : NULL; }
 enum { HOST_DEC_LAVC = 0, HOST_DEC_SPDIF = 1 };
 enum { PATH_NONE = -1, PATH_HOST = 0, PATH_SPATIAL = 1 };
 
-/* liborender channel labels — mirror bridge_api::RChannelLabel. cbindgen runs
- * with parse_deps=false, so orender.h does not emit this enum; keep in sync. */
-enum {
-    OR_L = 0, OR_R = 1, OR_C = 2, OR_LFE = 3, OR_LS = 4, OR_RS = 5,
-    OR_TFL = 6, OR_TFR = 7, OR_TSL = 8, OR_TSR = 9, OR_TBL = 10, OR_TBR = 11,
-    OR_LSC = 12, OR_RSC = 13, OR_LB = 14, OR_RB = 15, OR_CB = 16, OR_TC = 17,
-    OR_LSD = 18, OR_RSD = 19, OR_LW = 20, OR_RW = 21, OR_TFC = 22, OR_LFE2 = 23,
-    OR_UNKNOWN = 255,
-};
-
 struct priv {
     struct mp_log *log;
     struct mp_codec_params *codec;
+    /* liborender function table (never NULL: all-stubs when the runtime load
+     * failed, so every call site below stays unconditional). */
+    const struct orender_dl *dl;
     OrenderRenderer *renderer;
     int sample_rate;
     int channels;
     struct mp_chmap chmap;
     bool checked_spatial;       // built the output chmap for the spatial path
     int last_mapping;           // last orender_channel_mapping() the chmap was built for (live switch)
+    bool source_spatial;        // container/bridge identified object content
+    bool source_classified;     // first decoded presentation has been inspected
     bool force_host;            // engine unusable (no layout / create failed): always native
     int host_decoder_idx;       // HOST_DEC_LAVC (PCM) or HOST_DEC_SPDIF (passthrough)
     struct mp_decoder *native;  // lazily-created native child decoder for host mode
     int active_path;            // PATH_* of the last packet, for clean transitions
+    struct mp_frame *probe_packets; // packets retained while classifying the source
+    int num_probe_packets;
+    int probe_packet_pos;
     /* Track-info codec profile (shift+I) for the spatial path. Two concerns:
      *
      *  - Lifetime: the core thread reads codec_profile from the track list
@@ -152,33 +145,33 @@ struct priv {
     struct mp_decoder public;
 };
 
-/* Map a liborender label to an mpv speaker id. The 7.1.4 default maps exactly.
- * mpv's chmap has no top-side L/R, so those degrade to NA (Phase 5: custom
- * order). */
+/* Map a liborender label (OrenderChannelLabel from the vendored ABI header) to
+ * an mpv speaker id. The 7.1.4 default maps exactly. mpv's chmap has no
+ * top-side L/R, so those degrade to NA (Phase 5: custom order). */
 static int label_to_mp_speaker(uint8_t lbl)
 {
     switch (lbl) {
-    case OR_L:    return MP_SPEAKER_ID_FL;
-    case OR_R:    return MP_SPEAKER_ID_FR;
-    case OR_C:    return MP_SPEAKER_ID_FC;
-    case OR_LFE:  return MP_SPEAKER_ID_LFE;
-    case OR_LS:   return MP_SPEAKER_ID_SL;
-    case OR_RS:   return MP_SPEAKER_ID_SR;
-    case OR_LB:   return MP_SPEAKER_ID_BL;
-    case OR_RB:   return MP_SPEAKER_ID_BR;
-    case OR_CB:   return MP_SPEAKER_ID_BC;
-    case OR_LSC:  return MP_SPEAKER_ID_FLC;
-    case OR_RSC:  return MP_SPEAKER_ID_FRC;
-    case OR_LW:   return MP_SPEAKER_ID_WL;
-    case OR_RW:   return MP_SPEAKER_ID_WR;
-    case OR_LFE2: return MP_SPEAKER_ID_LFE2;
-    case OR_TFL:  return MP_SPEAKER_ID_TFL;
-    case OR_TFR:  return MP_SPEAKER_ID_TFR;
-    case OR_TFC:  return MP_SPEAKER_ID_TFC;
-    case OR_TBL:  return MP_SPEAKER_ID_TBL;
-    case OR_TBR:  return MP_SPEAKER_ID_TBR;
-    case OR_TC:   return MP_SPEAKER_ID_TC;
-    default:      return MP_SPEAKER_ID_NA;  /* incl. TSL/TSR/LSD/RSD */
+    case OrenderChannelLabel_L:    return MP_SPEAKER_ID_FL;
+    case OrenderChannelLabel_R:    return MP_SPEAKER_ID_FR;
+    case OrenderChannelLabel_C:    return MP_SPEAKER_ID_FC;
+    case OrenderChannelLabel_Lfe:  return MP_SPEAKER_ID_LFE;
+    case OrenderChannelLabel_Ls:   return MP_SPEAKER_ID_SL;
+    case OrenderChannelLabel_Rs:   return MP_SPEAKER_ID_SR;
+    case OrenderChannelLabel_Lb:   return MP_SPEAKER_ID_BL;
+    case OrenderChannelLabel_Rb:   return MP_SPEAKER_ID_BR;
+    case OrenderChannelLabel_Cb:   return MP_SPEAKER_ID_BC;
+    case OrenderChannelLabel_Lsc:  return MP_SPEAKER_ID_FLC;
+    case OrenderChannelLabel_Rsc:  return MP_SPEAKER_ID_FRC;
+    case OrenderChannelLabel_Lw:   return MP_SPEAKER_ID_WL;
+    case OrenderChannelLabel_Rw:   return MP_SPEAKER_ID_WR;
+    case OrenderChannelLabel_Lfe2: return MP_SPEAKER_ID_LFE2;
+    case OrenderChannelLabel_Tfl:  return MP_SPEAKER_ID_TFL;
+    case OrenderChannelLabel_Tfr:  return MP_SPEAKER_ID_TFR;
+    case OrenderChannelLabel_Tfc:  return MP_SPEAKER_ID_TFC;
+    case OrenderChannelLabel_Tbl:  return MP_SPEAKER_ID_TBL;
+    case OrenderChannelLabel_Tbr:  return MP_SPEAKER_ID_TBR;
+    case OrenderChannelLabel_Tc:   return MP_SPEAKER_ID_TC;
+    default:      return MP_SPEAKER_ID_NA;  /* incl. Tsl/Tsr/Lsd/Rsd */
     }
 }
 
@@ -187,30 +180,30 @@ static int label_to_mp_speaker(uint8_t lbl)
 static const char *label_to_short_name(uint8_t lbl)
 {
     switch (lbl) {
-    case OR_L:    return "L";
-    case OR_R:    return "R";
-    case OR_C:    return "C";
-    case OR_LFE:  return "LFE";
-    case OR_LS:   return "Ls";
-    case OR_RS:   return "Rs";
-    case OR_TFL:  return "Tfl";
-    case OR_TFR:  return "Tfr";
-    case OR_TSL:  return "Tsl";
-    case OR_TSR:  return "Tsr";
-    case OR_TBL:  return "Tbl";
-    case OR_TBR:  return "Tbr";
-    case OR_LSC:  return "Lsc";
-    case OR_RSC:  return "Rsc";
-    case OR_LB:   return "Lb";
-    case OR_RB:   return "Rb";
-    case OR_CB:   return "Cb";
-    case OR_TC:   return "Tc";
-    case OR_LSD:  return "Lsd";
-    case OR_RSD:  return "Rsd";
-    case OR_LW:   return "Lw";
-    case OR_RW:   return "Rw";
-    case OR_TFC:  return "Tfc";
-    case OR_LFE2: return "LFE2";
+    case OrenderChannelLabel_L:    return "L";
+    case OrenderChannelLabel_R:    return "R";
+    case OrenderChannelLabel_C:    return "C";
+    case OrenderChannelLabel_Lfe:  return "LFE";
+    case OrenderChannelLabel_Ls:   return "Ls";
+    case OrenderChannelLabel_Rs:   return "Rs";
+    case OrenderChannelLabel_Tfl:  return "Tfl";
+    case OrenderChannelLabel_Tfr:  return "Tfr";
+    case OrenderChannelLabel_Tsl:  return "Tsl";
+    case OrenderChannelLabel_Tsr:  return "Tsr";
+    case OrenderChannelLabel_Tbl:  return "Tbl";
+    case OrenderChannelLabel_Tbr:  return "Tbr";
+    case OrenderChannelLabel_Lsc:  return "Lsc";
+    case OrenderChannelLabel_Rsc:  return "Rsc";
+    case OrenderChannelLabel_Lb:   return "Lb";
+    case OrenderChannelLabel_Rb:   return "Rb";
+    case OrenderChannelLabel_Cb:   return "Cb";
+    case OrenderChannelLabel_Tc:   return "Tc";
+    case OrenderChannelLabel_Lsd:  return "Lsd";
+    case OrenderChannelLabel_Rsd:  return "Rsd";
+    case OrenderChannelLabel_Lw:   return "Lw";
+    case OrenderChannelLabel_Rw:   return "Rw";
+    case OrenderChannelLabel_Tfc:  return "Tfc";
+    case OrenderChannelLabel_Lfe2: return "LFE2";
     default:      return "?";
     }
 }
@@ -233,6 +226,28 @@ static const char *profile_base(const char *codec, bool has_objects)
     return codec;
 }
 
+/* FFmpeg can expose DTS:X directly in AVCodecParameters.profile, letting the
+ * demuxer identify it before either decoder consumes a packet. Use that early
+ * hint when available; otherwise the retained-packet probe below lets the
+ * bridge classify the presentation without losing the native fallback audio. */
+static bool codec_is_spatial_hint(const struct mp_codec_params *codec)
+{
+    const char *profile = codec->codec_profile;
+    if (profile && (strstr(profile, "DTS:X") || strstr(profile, "Atmos")))
+        return true;
+
+    int av_profile = codec->lav_codecpar ? codec->lav_codecpar->profile
+                                         : AV_PROFILE_UNKNOWN;
+    if (strcmp(codec->codec, "dts") == 0)
+        return av_profile == AV_PROFILE_DTS_HD_MA_X ||
+               av_profile == AV_PROFILE_DTS_HD_MA_X_IMAX;
+    if (strcmp(codec->codec, "eac3") == 0)
+        return av_profile == AV_PROFILE_EAC3_DDP_ATMOS;
+    if (strcmp(codec->codec, "truehd") == 0)
+        return av_profile == AV_PROFILE_TRUEHD_ATMOS;
+    return false;
+}
+
 /* Recompose codec_profile from the engine's live presentation info (Atmos flag,
  * bed composition, object count, DialNorm) and publish it for the track-info
  * display. Cheap and idempotent: returns immediately unless the value changed. */
@@ -241,11 +256,11 @@ static void refresh_codec_profile(struct priv *p)
     if (!p->renderer)
         return;
 
-    int objs    = orender_object_count(p->renderer);  // >=0 / -1
-    int dnorm   = orender_dialnorm_db(p->renderer);   // <=0 / INT32_MIN (unknown)
+    int objs    = p->dl->object_count(p->renderer);  // >=0 / -1
+    int dnorm   = p->dl->dialnorm_db(p->renderer);   // <=0 / INT32_MIN (unknown)
 
     uint8_t bed[MP_NUM_CHANNELS];
-    uint32_t bedn = orender_bed_layout(p->renderer, bed, MP_NUM_CHANNELS);
+    uint32_t bedn = p->dl->bed_layout(p->renderer, bed, MP_NUM_CHANNELS);
     /* FNV-1a fingerprint of the bed labels, so a bed change (same object count)
      * still triggers a rebuild. */
     unsigned bed_sig = 2166136261u;
@@ -293,7 +308,7 @@ static void refresh_codec_profile(struct priv *p)
 static bool build_chmap(struct priv *p)
 {
     uint8_t labels[MP_NUM_CHANNELS];
-    uint32_t n = orender_channel_layout(p->renderer, labels, MP_NUM_CHANNELS);
+    uint32_t n = p->dl->channel_layout(p->renderer, labels, MP_NUM_CHANNELS);
     if (n == 0 || n > MP_NUM_CHANNELS) {
         p->chmap = (struct mp_chmap){0};
         return false;
@@ -303,7 +318,7 @@ static bool build_chmap(struct priv *p)
      * layout speaker N, matching a custom rig wired in layout order. Only
      * by-name (1) builds a positional map so a position-aware sink routes by
      * speaker; <0 (error) also falls back to positionless. */
-    if (orender_channel_mapping(p->renderer) != 1) {
+    if (p->dl->channel_mapping(p->renderer) != 1) {
         mp_chmap_set_unknown(&p->chmap, n);
         return true;
     }
@@ -371,6 +386,14 @@ static bool ensure_native_child(struct mp_filter *da, struct priv *p)
     return true;
 }
 
+static void clear_probe_packets(struct priv *p)
+{
+    for (int i = p->probe_packet_pos; i < p->num_probe_packets; i++)
+        mp_frame_unref(&p->probe_packets[i]);
+    p->num_probe_packets = 0;
+    p->probe_packet_pos = 0;
+}
+
 /* Host mode: pump the native child — forward packets in, decoded frames out. */
 static void process_host(struct mp_filter *da, struct priv *p)
 {
@@ -388,21 +411,40 @@ static void process_host(struct mp_filter *da, struct priv *p)
         mp_pin_in_write(da->ppins[1], frame);
     }
     // Feed input packets to the child.
-    if (mp_pin_can_transfer_data(child_in, da->ppins[0])) {
+    if (p->probe_packet_pos < p->num_probe_packets &&
+        mp_pin_in_needs_data(child_in))
+    {
+        struct mp_frame frame = p->probe_packets[p->probe_packet_pos];
+        p->probe_packets[p->probe_packet_pos++] = MP_NO_FRAME;
+        mp_pin_in_write(child_in, frame);
+        if (p->probe_packet_pos == p->num_probe_packets) {
+            p->num_probe_packets = 0;
+            p->probe_packet_pos = 0;
+        }
+    } else if (mp_pin_can_transfer_data(child_in, da->ppins[0])) {
         struct mp_frame frame = mp_pin_out_read(da->ppins[0]);
         mp_pin_in_write(child_in, frame);
     }
 }
 
 /* Spatial mode: decode + VBAP-render through the engine. */
-static void process_spatial(struct mp_filter *da, struct priv *p)
+static void process_spatial(struct mp_filter *da, struct priv *p, bool probe_host)
 {
     if (!mp_pin_can_transfer_data(da->ppins[1], da->ppins[0]))
         return;
 
     struct mp_frame inframe = mp_pin_out_read(da->ppins[0]);
     if (inframe.type == MP_FRAME_EOF) {
-        mp_pin_in_write(da->ppins[1], inframe);
+        if (probe_host && p->num_probe_packets > 0) {
+            MP_TARRAY_APPEND(p, p->probe_packets, p->num_probe_packets, inframe);
+            p->source_classified = true;
+            p->active_path = PATH_HOST;
+            p->dl->overlay_set_rendering(0);
+            p->dl->overlay_clear();
+            process_host(da, p);
+        } else {
+            mp_pin_in_write(da->ppins[1], inframe);
+        }
         return;
     } else if (inframe.type != MP_FRAME_PACKET) {
         if (inframe.type) {
@@ -420,21 +462,21 @@ static void process_spatial(struct mp_filter *da, struct priv *p)
     /* The output channel count can change mid-stream (Studio toggling the
      * binaural ⇄ speaker output mode), so refresh it every packet and size
      * the scratch buffer for the current mode. */
-    uint32_t cur_ch = orender_channel_count(p->renderer);
+    uint32_t cur_ch = p->dl->channel_count(p->renderer);
     if (cur_ch > 0 && cur_ch <= MP_NUM_CHANNELS && (int)cur_ch != p->channels)
         p->channels = (int)cur_ch;
     int ch = p->channels > 0 ? p->channels : 1;
     size_t capacity = (size_t)4096 * (size_t)ch;
     float *samples = talloc_array(NULL, float, capacity);
 
-    size_t n_frames = 0;
+    uintptr_t n_frames = 0;
     uint32_t n_ch = 0;
     int64_t out_pts_us = 0;
     int64_t pts_us = mpkt->pts == MP_NOPTS_VALUE ? 0 : (int64_t)(mpkt->pts * 1e6);
 
-    int ret = orender_process(p->renderer, mpkt->buffer, mpkt->len, pts_us,
-                              samples, capacity,
-                              &n_frames, &n_ch, &out_pts_us);
+    int ret = p->dl->process(p->renderer, mpkt->buffer, mpkt->len, pts_us,
+                             samples, capacity,
+                             &n_frames, &n_ch, &out_pts_us);
     if (ret < 0) {
         MP_ERR(da, "orender_process error %d\n", ret);
         failed = true;
@@ -445,6 +487,43 @@ static void process_spatial(struct mp_filter *da, struct priv *p)
         goto done;
     }
 
+    if (probe_host) {
+        /* Keep ownership of every packet until the bridge can classify the
+         * first decoded presentation. If it is a plain channel stream, replay
+         * these packets into the native decoder so probing loses no audio. */
+        MP_TARRAY_APPEND(p, p->probe_packets, p->num_probe_packets, inframe);
+        inframe = MP_NO_FRAME;
+        mpkt = NULL;
+    }
+
+    /* Classify only from *decoded* frames: before the first frame,
+     * has_objects reports the bridge's container-level guess (e.g. TrueHD
+     * assumes objects until proven otherwise), and latching that guess is
+     * exactly the failure the live-fact contract forbids. */
+    int spatial = p->dl->has_objects(p->renderer);
+    if (spatial == 1 && n_frames > 0) {
+        p->source_spatial = true;
+        p->source_classified = true;
+        clear_probe_packets(p);
+        p->dl->overlay_set_rendering(1);
+    } else if (probe_host && n_frames > 0) {
+        /* The bridge produced a real non-object frame: classification is now
+         * definitive. The decoded fact overrides the provisional container
+         * hint — this presentation is channel-based, not object content — so
+         * clear source_spatial too, else the next packet's routing
+         * (host = !source_spatial && …) would bounce it back to the spatial
+         * path and render HostPassthrough silence. Discard the probe render
+         * and replay from packet zero via the native child. */
+        p->source_spatial = false;
+        p->source_classified = true;
+        p->active_path = PATH_HOST;
+        p->dl->overlay_set_rendering(0);
+        p->dl->overlay_clear();
+        talloc_free(samples);
+        process_host(da, p);
+        return;
+    }
+
     if (n_frames == 0)
         goto done;   /* packet consumed; no output yet (need more data) */
 
@@ -453,7 +532,7 @@ static void process_spatial(struct mp_filter *da, struct priv *p)
      * frame (AC-3/DTS need several packets to acquire sync). */
     if (!p->checked_spatial) {
         p->checked_spatial = true;
-        p->last_mapping = orender_channel_mapping(p->renderer);
+        p->last_mapping = p->dl->channel_mapping(p->renderer);
         if (!build_chmap(p)) {
             if (p->chmap.num == 0) {
                 /* The renderer reported no output channels (e.g. the speaker
@@ -495,7 +574,7 @@ static void process_spatial(struct mp_filter *da, struct priv *p)
      * above misses it, so poll the mapping and rebuild on change — the new chmap
      * set on the frame below makes mpv's filter chain reconfigure the output. */
     {
-        int cur_mapping = orender_channel_mapping(p->renderer);
+        int cur_mapping = p->dl->channel_mapping(p->renderer);
         if (cur_mapping != p->last_mapping) {
             MP_VERBOSE(da, "output channel mapping changed (%d -> %d); rebuilding chmap\n",
                        p->last_mapping, cur_mapping);
@@ -561,11 +640,12 @@ static void ad_orender_process(struct mp_filter *da)
 {
     struct priv *p = da->priv;
 
-    /* Route on the engine's live channel_render_mode (0 host, 1 spatial), which
-     * Studio flips over OSC. Reading it per packet is a cheap in-memory call, not
-     * a poll. `force_host` (engine unusable) pins host. */
-    int mode = p->renderer ? orender_channel_mode(p->renderer) : 0;
-    bool host = p->force_host || mode != 1;
+    /* The live channel mode only selects what to do with channel-based sources.
+     * Object content identified by the container or bridge always stays on the
+     * spatial path, independently of Studio's "Spatialize 2D sources" toggle. */
+    int mode = p->renderer ? p->dl->channel_mode(p->renderer) : 0;
+    bool probe_host = !p->force_host && !p->source_classified && mode != 1;
+    bool host = p->force_host || (!probe_host && !p->source_spatial && mode != 1);
     int path = host ? PATH_HOST : PATH_SPATIAL;
 
     /* On a mode flip, flush stale state on the side we switch *to* so it starts
@@ -574,9 +654,9 @@ static void ad_orender_process(struct mp_filter *da)
     if (path != p->active_path) {
         if (path == PATH_SPATIAL) {
             if (p->renderer)
-                orender_reset(p->renderer);
+                p->dl->reset(p->renderer);
             p->checked_spatial = false;
-            orender_overlay_set_rendering(1);  // show the spatial overlay again
+            p->dl->overlay_set_rendering(1);  // show the spatial overlay again
             /* A host stint's child ad_lavc overwrote codec_desc/codec_profile
              * with its own strings; restore our desc and force the next frame to
              * republish our profile (reset the cache to impossible sentinels). */
@@ -590,8 +670,8 @@ static void ad_orender_process(struct mp_filter *da)
              * decode natively — nothing is being spatialized — and drop the stale
              * scene so it does not linger. The user's overlay on/off preference is
              * preserved; spatial mode repopulates it. */
-            orender_overlay_set_rendering(0);
-            orender_overlay_clear();
+            p->dl->overlay_set_rendering(0);
+            p->dl->overlay_clear();
         }
         p->active_path = path;
     }
@@ -599,16 +679,17 @@ static void ad_orender_process(struct mp_filter *da)
     if (host)
         process_host(da, p);
     else
-        process_spatial(da, p);
+        process_spatial(da, p, probe_host);
 }
 
 static void ad_orender_reset(struct mp_filter *da)
 {
     struct priv *p = da->priv;
     if (p->renderer)
-        orender_reset(p->renderer);
+        p->dl->reset(p->renderer);
     if (p->native && p->native->f)
         mp_filter_reset(p->native->f);
+    clear_probe_packets(p);
     p->checked_spatial = false;
     p->active_path = PATH_NONE;
 }
@@ -616,12 +697,13 @@ static void ad_orender_reset(struct mp_filter *da)
 static void ad_orender_destroy(struct mp_filter *da)
 {
     struct priv *p = da->priv;
+    clear_probe_packets(p);
     /* The native child is a talloc child of `da` and is freed with it; the
      * engine is an FFI handle we must release explicitly. The codec profile
      * buffer is a talloc child of p->codec (not of `da`), so it correctly
      * outlives this filter — see the profile_buf note in struct priv. */
     if (p->renderer) {
-        orender_destroy(p->renderer);
+        p->dl->destroy(p->renderer);
         p->renderer = NULL;
     }
 }
@@ -657,11 +739,36 @@ static struct mp_decoder *create(struct mp_filter *parent,
     p->codec = codec;
     p->sample_rate = codec->samplerate;
     p->active_path = PATH_NONE;
+    p->source_spatial = codec_is_spatial_hint(codec);
+    /* The hint is provisional: routing follows the *decoded* fact (the
+     * engine's has_objects is live), so classification only happens once the
+     * bridge has produced frames. A container-profiled DTS:X track whose
+     * presentation is fixed channels (no dynamic objects) must still probe
+     * and fall back to the native path in host mode — terminally trusting
+     * the hint here left the embedded engine passing through silence
+     * forever (channel-object contract, phase 5). */
+    p->source_classified = false;
     p->public.f = da;
+
+    MP_VERBOSE(da, "input profile: %s (early spatial=%s)\n",
+               codec->codec_profile ? codec->codec_profile : "unknown",
+               p->source_spatial ? "yes" : "no");
 
     struct ad_orender_params *opts =
         mp_get_config_group(da, da->global, &ad_orender_conf);
     p->host_decoder_idx = opts->host_decoder_idx;
+
+    /* Load liborender (once per process; later calls hit the cache). On
+     * failure keep the all-stubs table so every call below stays valid;
+     * create() then returns NULL and the force_host path takes over. */
+    p->dl = orender_dl_get(da->global, da->log);
+    if (!p->dl) {
+        MP_ERR(da, "liborender unavailable (%s) — decoding natively. Install "
+                   "the engine library (Omniphony Studio deploys it), place it "
+                   "next to mpv, or point --ad-orender-library at it.\n",
+               orender_dl_error());
+        p->dl = orender_dl_stubs();
+    }
 
     OrenderConfig cfg = {
         .sample_rate         = p->sample_rate,
@@ -683,7 +790,7 @@ static struct mp_decoder *create(struct mp_filter *parent,
         .osc_host            = nz(opts->osc_monitor_target),
     };
 
-    p->renderer = orender_create(&cfg);
+    p->renderer = p->dl->create(&cfg);
     if (!p->renderer) {
         /* The engine could not start (e.g. a bad render.bridge_path). Rather than
          * leave the track with no decoder at all, stay selected and decode
@@ -707,16 +814,16 @@ static struct mp_decoder *create(struct mp_filter *parent,
      * `value - 1` maps host(1)→0 and spatial(2)→1. The live mode is then driven
      * by Studio over OSC. */
     if (p->renderer && opts->channel_mode_idx > 0)
-        orender_set_channel_mode(p->renderer, opts->channel_mode_idx - 1);
+        p->dl->set_channel_mode(p->renderer, opts->channel_mode_idx - 1);
 
     if (p->renderer)
-        p->channels = orender_channel_count(p->renderer);
+        p->channels = p->dl->channel_count(p->renderer);
 
     /* Match the overlay's initial visibility to the starting mode, so it does not
      * flash the wireframe cube before the first packet picks the path. */
-    bool start_host = p->force_host ||
-                      !p->renderer || orender_channel_mode(p->renderer) != 1;
-    orender_overlay_set_rendering(start_host ? 0 : 1);
+    bool start_host = p->force_host || !p->renderer ||
+                      (!p->source_spatial && p->dl->channel_mode(p->renderer) != 1);
+    p->dl->overlay_set_rendering(start_host ? 0 : 1);
 
     /* Official-cased codec name. No "(orender)" suffix: the decoder already shows
      * up as the trailing "[orender]" bracket (codec != decoder). The Atmos /

@@ -1,8 +1,9 @@
 # patched mpv checkouts / build trees (scripts/apply-patches.sh)
 /build/
-# from-source FEL dependency stack (scripts/build-fel-deps.sh) + local build outputs
+# from-source master-track dependency stack and local build outputs
 /fel-prefix/
 /fel-work/
+# stale local liborender sysroot (nothing needs it since the dlopen change)
 /sysroot/
 # in-place meson build dirs
 _b/
