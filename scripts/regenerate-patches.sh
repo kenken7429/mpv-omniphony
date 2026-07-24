@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # Regenerate patches/ from the mpv fork's `orender` branch.
 #
-# Run this in your mpv fork checkout after committing integration changes on the
-# `orender` branch (branched off the pinned upstream tag/`master`).
+# Run this after committing integration changes on the `orender` branch, which
+# must remain based on the pinned upstream tag.
 #
 # Usage:
 #   scripts/regenerate-patches.sh /path/to/mpv-fork [BASE_REF]
 #
-# BASE_REF defaults to `master` (the upstream mirror branch). See the top-level
-# README for the fork branching workflow.
+# BASE_REF defaults to `v0.41.0`, matching apply-patches.sh. See the top-level
+# README for the stable and live-master fork branching workflows.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
