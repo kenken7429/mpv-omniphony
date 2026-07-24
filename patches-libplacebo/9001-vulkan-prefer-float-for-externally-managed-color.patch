@@ -1,0 +1,22 @@
+diff --git a/src/vulkan/swapchain.c b/src/vulkan/swapchain.c
+index 90f5da31..08807921 100644
+--- a/src/vulkan/swapchain.c
++++ b/src/vulkan/swapchain.c
+@@ -296,6 +296,17 @@ static bool pick_surf_format(pl_swapchain sw, const struct pl_color_space *hint)
+             case PL_FMT_TYPE_COUNT: pl_unreachable();
+             };
+
++            // scRGB uses extended-range linear values (including values above
++            // 1.0 and below 0.0), which UNORM swapchains clip. On Wayland,
++            // externally managed color surfaces deliberately request the
++            // PASS_THROUGH colorspace using an UNKNOWN transfer function, so
++            // prefer float for that case as well. Normal fallback scoring is
++            // retained if no float surface is available.
++            if ((hint->transfer == PL_COLOR_TRC_SCRGB ||
++                 hint->transfer == PL_COLOR_TRC_UNKNOWN) &&
++                plfmt->type == PL_FMT_FLOAT)
++                score += 10;
++
+             if (score > best_score) {
+                 best_score = score;
+                 best_id = i;

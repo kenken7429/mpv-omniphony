@@ -105,6 +105,24 @@ else
 fi
 PLACEBO_SHA="$(git -C "$WORK/libplacebo" rev-parse --short HEAD)"
 
+# Keep local integration fixes separate from upstream tracking. In particular,
+# the Wayland color-management path requests a PASS_THROUGH Vulkan colorspace;
+# without the patch below, libplacebo prefers 16-bit UNORM over FP16 and clips
+# extended-range scRGB values above 1.0.
+pl_patches=("$REPO_ROOT"/patches-libplacebo/*.patch)
+if [ -e "${pl_patches[0]}" ]; then
+    for patch in "${pl_patches[@]}"; do
+        if git -C "$WORK/libplacebo" apply --check "$patch"; then
+            git -C "$WORK/libplacebo" apply "$patch"
+        elif git -C "$WORK/libplacebo" apply --reverse --check "$patch"; then
+            log "libplacebo patch already applied: $(basename "$patch")"
+        else
+            echo "!! libplacebo patch no longer applies: $patch" >&2
+            exit 1
+        fi
+    done
+fi
+
 # Force --libdir=lib so the .pc lands in $PREFIX/lib/pkgconfig everywhere;
 # Ubuntu/Debian meson otherwise defaults to a multiarch lib/<triplet> dir that
 # our PKG_CONFIG_PATH ($PREFIX/lib/pkgconfig) would miss. (Homebrew is not
