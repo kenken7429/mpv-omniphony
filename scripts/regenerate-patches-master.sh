@@ -37,7 +37,12 @@ fi
 
 mkdir -p "$REPO_ROOT/patches-master"
 echo ">> generating patches from ${BASE_REF}..${SRC_BRANCH} in $FORK"
-rm -f "$REPO_ROOT"/patches-master/*.patch
+# 9xxx-*.patch are MANUAL patches with no fork-commit counterpart (they target
+# upstream code the fork base predates, e.g. 9001-f_swresample-force-identity).
+# They apply last (lexicographic glob in apply-patches-master.sh) and must
+# survive regeneration — only the format-patch-generated series is wiped.
+find "$REPO_ROOT/patches-master" -maxdepth 1 -name '*.patch' \
+    ! -name '9[0-9][0-9][0-9]-*.patch' -delete
 git -C "$FORK" format-patch "${BASE_REF}..${SRC_BRANCH}" \
     --no-numbered-files --zero-commit --no-signature \
     -o "$REPO_ROOT/patches-master"
