@@ -5,9 +5,14 @@ mpv with a **spatial audio decoder** that renders objects through
 instead of letting FFmpeg downmix. **This repository holds the mpv-side
 integration and build only.**
 
+[![Download Omniphony Studio](https://img.shields.io/badge/Download-Omniphony-2ea44f?style=for-the-badge&logo=github)](https://github.com/mgth/Omniphony/releases/latest)
+[![Download mpv-omniphony](https://img.shields.io/badge/Download-mpv--omniphony-1f6feb?style=for-the-badge&logo=github)](https://github.com/mgth/Omniphony/releases/tag/mpv-v0.4.2)
+[![Download mpv-omniphony FEL](https://img.shields.io/badge/Download-mpv--omniphony%20FEL-8957e5?style=for-the-badge&logo=github)](https://github.com/mgth/Omniphony/releases/tag/mpv-v0.4.2-fel-beta.1)
+
 > 📖 **Usage** (playback, Studio supervision, overlay controls) and **prebuilt
 > downloads** live with the engine:
 > **[Omniphony → mpv-omniphony usage guide](https://github.com/mgth/Omniphony/blob/main/docs/mpv-omniphony.md)**.
+> Releases are published on the **engine** repo — this repo carries no downloads.
 
 > ⭐ **mpv-omniphony is one frontend for the
 > [Omniphony](https://github.com/mgth/Omniphony) spatial audio engine — the engine
