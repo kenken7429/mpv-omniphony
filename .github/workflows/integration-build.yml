@@ -308,6 +308,14 @@ jobs:
             fi
           done
         shell: bash
+
+      - name: Verify staged DLL imports resolve
+        # Guard against prebuilt-repo skew: a library bumped in the binary repo
+        # while its dependants were built against the previous version ships a
+        # bundle that fails at launch on every Windows machine with an "entry
+        # point not found" dialog (mgth/Omniphony#200).
+        run: python3 scripts/check-bundle-imports.py staging
+
       - name: Package final zip
         run: |
           ls -la staging/
