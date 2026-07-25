@@ -58,7 +58,13 @@ jobs:
         run: cargo build --release -p orender_ffi
         working-directory: omniphony/omniphony-renderer
         env:
-          RUSTFLAGS: -D warnings
+          # This builds a *pinned external* source tree (Omniphony at
+          # OMNIPHONY_REF), so lint policy there is not ours to enforce: an
+          # immutable tag must stay buildable as rustc grows new lints.
+          # dead_code in particular fires on liborender's dormant
+          # artifact-evaluator path, which is reachable only through code the
+          # FFI build never links.
+          RUSTFLAGS: -D warnings -A dead_code
 
       - name: Stage liborender (bundled fallback)
         # mpv no longer links liborender — it dlopens it at runtime, preferring
@@ -137,7 +143,13 @@ jobs:
         run: cargo build --release -p orender_ffi
         working-directory: omniphony-renderer
         env:
-          RUSTFLAGS: -D warnings
+          # This builds a *pinned external* source tree (Omniphony at
+          # OMNIPHONY_REF), so lint policy there is not ours to enforce: an
+          # immutable tag must stay buildable as rustc grows new lints.
+          # dead_code in particular fires on liborender's dormant
+          # artifact-evaluator path, which is reachable only through code the
+          # FFI build never links.
+          RUSTFLAGS: -D warnings -A dead_code
 
       - name: Stage artifact
         shell: pwsh
@@ -451,7 +463,13 @@ jobs:
         run: cargo build --release -p orender_ffi
         working-directory: omniphony/omniphony-renderer
         env:
-          RUSTFLAGS: -D warnings
+          # This builds a *pinned external* source tree (Omniphony at
+          # OMNIPHONY_REF), so lint policy there is not ours to enforce: an
+          # immutable tag must stay buildable as rustc grows new lints.
+          # dead_code in particular fires on liborender's dormant
+          # artifact-evaluator path, which is reachable only through code the
+          # FFI build never links.
+          RUSTFLAGS: -D warnings -A dead_code
 
       - name: Stage liborender (bundled fallback)
         # Runtime dependency only: mpv dlopens it, preferring a Studio-deployed
