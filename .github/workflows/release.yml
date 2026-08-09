@@ -235,13 +235,20 @@ jobs:
           # this pin needs revisiting, in either direction — at that point
           # just delete this step.
           #
-          # The repo section's `SigLevel = Optional TrustAll` does NOT govern
-          # `pacman -U <url>` installs — those use LocalFileSigLevel, which
-          # by default rejects the (unimported) Martchus signature. Extend the
-          # same trust-on-first-use policy to this one file install.
-          sed -i '/^\[options\]/a LocalFileSigLevel = Optional TrustAll' /etc/pacman.conf
-          pacman -U --noconfirm \
+          # `pacman -U <url>` also fetches the detached .sig next to the
+          # package, which forces a verification that can only fail: the
+          # Martchus key is not in the container's keyring, and TrustAll does
+          # not help with a key that is entirely absent (it only relaxes the
+          # trust level of keys the keyring already has). Download the package
+          # alone (no .sig) and install the local file under
+          # LocalFileSigLevel = Optional (must be set explicitly: unset, it
+          # inherits the global `SigLevel = Required` and would reject an
+          # unsigned file too). No signature present -> verification skipped,
+          # the same effective trust-on-first-use as the repo installs above.
+          sed -i '/^\[options\]/a LocalFileSigLevel = Optional' /etc/pacman.conf
+          curl -sLO \
             https://martchus.no-ip.biz/repo/arch/ownstuff/os/x86_64/mingw-w64-x265-4.1-1-any.pkg.tar.zst
+          pacman -U --noconfirm ./mingw-w64-x265-4.1-1-any.pkg.tar.zst
 
       - name: Build & install libsrt from source (ABI-matched to our libstdc++)
         run: |
