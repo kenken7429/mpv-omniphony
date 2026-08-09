@@ -38,9 +38,18 @@ jobs:
           sudo apt-get install -y \
             meson ninja-build pkg-config gcc \
             libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev libswscale-dev \
-            libass-dev libplacebo-dev liblua5.2-dev libx11-dev \
+            libass-dev libplacebo-dev liblua5.2-dev \
             libva-dev libdrm-dev libegl-dev libgl-dev \
-            libbluray-dev libdvdnav-dev libdvdread-dev
+            libbluray-dev libdvdnav-dev libdvdread-dev \
+            libx11-dev libxss-dev libxext-dev libxpresent-dev libxrandr-dev \
+            libwayland-dev wayland-protocols libxkbcommon-dev \
+            libasound2-dev libpipewire-0.3-dev libpulse-dev
+          # x11: libx11-dev alone is NOT enough — mpv's meson x11 feature also
+          # requires xscrnsaver/xext/xpresent/xrandr, and silently disables the
+          # whole X11 vo when any of them is missing (issue #59: the v0.4.2
+          # Linux asset shipped with no windowed vo and no audio ao at all).
+          # wayland: client lib + protocols + xkbcommon for vo_gpu on Wayland.
+          # audio: ALSA + PipeWire + PulseAudio aos.
 
       - name: Checkout Omniphony (renderer source)
         uses: actions/checkout@v5
@@ -106,9 +115,15 @@ jobs:
           # build FAILS LOUDLY if the dep is missing rather than silently
           # shipping a release without disc support. (dvdnav pulls libdvdread;
           # there is no separate mpv 'dvdread' option.)
+          # x11/wayland/alsa/pipewire/pulse: desktop output backends, forced on
+          # for the same reason — meson's auto features silently drop them when
+          # a dev package is missing, which shipped a v0.4.2 Linux binary that
+          # could only render to files (issue #59).
           meson setup _b -Dorender=enabled \
             -Dcuda-hwaccel=enabled -Dcuda-interop=enabled \
             -Dvaapi=auto \
+            -Dx11=enabled -Dwayland=enabled \
+            -Dalsa=enabled -Dpipewire=enabled -Dpulse=enabled \
             -Dlibbluray=enabled -Ddvdnav=enabled
           meson compile -C _b
 
