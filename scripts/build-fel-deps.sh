@@ -185,8 +185,11 @@ fi
 git -C "$WORK/ffmpeg" reset --hard -q "origin/${FFMPEG_REF##*/}" 2>/dev/null || true
 git -C "$WORK/ffmpeg" clean -fdx >/dev/null 2>&1 || true
 
+# libopus: the wrapper decoder must be available as a fallback next to the
+# native opus decoder (mpv-omniphony#64 shipped FEL bundles without it).
 ff_args=(--prefix="$PREFIX" --enable-shared --disable-static
-         --enable-gpl --enable-version3 --disable-doc)
+         --enable-gpl --enable-version3 --disable-doc
+         --enable-libopus)
 # NVIDIA nvdec/cuvid only where NVIDIA exists; macOS auto-detects VideoToolbox
 # instead, which is fine — FEL needs only the dovi_split BSF + libdovi.
 [ "$MACOS" = 1 ] || ff_args+=(--enable-ffnvcodec --enable-nvdec --enable-cuvid)
