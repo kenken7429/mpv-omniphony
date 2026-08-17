@@ -669,6 +669,11 @@ jobs:
           src="$(ls -d build/mpv-master-* | grep -v 'mpv-master-clone$' | head -n1)"
           echo "MPV_DIR=$src" >> "$GITHUB_ENV"
 
+      # ao_asio needs the Steinberg ASIO SDK headers (GPLv3 half of its dual
+      # licence). Exports ASIO_SDK_DIR, consumed by -Dasio-sdk below.
+      - name: Setup ASIO SDK
+        uses: ./.github/actions/setup-asio-sdk
+
       - name: Cross-compile mpv (MinGW, linked against FEL sysroot)
         run: |
           cd "$MPV_DIR"
@@ -676,7 +681,7 @@ jobs:
           # cuda-interop left at auto for the MinGW GL/D3D interop path.
           meson setup _b \
             --cross-file="$GITHUB_WORKSPACE/sysroot/mingw-cross.ini" \
-            -Dorender=enabled -Dlua=lua52 -Dasio=enabled -Dd3d11=enabled -Dcuda-hwaccel=enabled \
+            -Dorender=enabled -Dlua=lua52 -Dasio=enabled -Dasio-sdk="$ASIO_SDK_DIR" -Dd3d11=enabled -Dcuda-hwaccel=enabled \
             -Dlibbluray=enabled -Ddvdnav=enabled
           meson compile -C _b
 

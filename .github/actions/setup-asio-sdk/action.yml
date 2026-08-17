@@ -1,0 +1,42 @@
+name: Setup ASIO SDK
+description: >
+  Fetch the Steinberg ASIO SDK and export ASIO_SDK_DIR for mpv's -Dasio-sdk.
+  For the Linux-hosted mingw cross-builds; only the SDK headers are consumed,
+  none of its sources are compiled.
+
+# ao_asio builds against the SDK headers under the GPLv3 half of Steinberg's
+# dual licence (since 2025-10-15; the other half is proprietary). That is what
+# makes mpv's -Dasio a GPL-only feature, and it matches what this fork already
+# publishes: the player and the libmpv SDK asset are GPL-3.0-or-later because
+# liborender is.
+#
+# The mirror carries no tags, so the commit is pinned here — this file is the
+# single place to bump it.
+
+inputs:
+  commit:
+    description: Commit of github.com/audiosdk/asio to pin.
+    required: false
+    # "inital commit of version 2.3.4" (2025-10-16)
+    default: 496a0765b8bb9c26f764f22f9a9712a937177db2
+
+runs:
+  using: composite
+  steps:
+    - name: Fetch the ASIO SDK
+      shell: bash
+      env:
+        ASIO_SDK_COMMIT: ${{ inputs.commit }}
+      run: |
+        set -euo pipefail
+        dest="$GITHUB_WORKSPACE/asio-sdk"
+        rm -rf "$dest" && mkdir -p "$dest"
+        curl -sSL --retry 3 -o "$dest/../asio_sdk.tar.gz" \
+          "https://github.com/audiosdk/asio/archive/$ASIO_SDK_COMMIT.tar.gz"
+        # --strip-components=1 drops the asio-<sha>/ prefix so the path handed
+        # to -Dasio-sdk does not change when the pin moves.
+        tar -xzf "$dest/../asio_sdk.tar.gz" -C "$dest" --strip-components=1
+        # Fail here rather than inside meson's has_header probe.
+        test -f "$dest/common/asio.h" \
+          || { echo "no common/asio.h under $dest"; exit 1; }
+        echo "ASIO_SDK_DIR=$dest" >> "$GITHUB_ENV"

@@ -256,6 +256,11 @@ jobs:
           CROSS_FILE="$GITHUB_WORKSPACE/sysroot/mingw-cross.ini" \
             bash scripts/build-libbluray-mingw.sh
 
+      # ao_asio needs the Steinberg ASIO SDK headers (GPLv3 half of its dual
+      # licence). Exports ASIO_SDK_DIR, consumed by -Dasio-sdk below.
+      - name: Setup ASIO SDK
+        uses: ./.github/actions/setup-asio-sdk
+
       - name: Cross-compile mpv (MinGW)
         run: |
           cd "build/mpv-${MPV_TAG}"
@@ -263,7 +268,7 @@ jobs:
             --cross-file="$GITHUB_WORKSPACE/sysroot/mingw-cross.ini" \
             -Dorender=enabled \
             -Dlua=lua52 \
-            -Dasio=enabled \
+            -Dasio=enabled -Dasio-sdk="$ASIO_SDK_DIR" \
             -Dlibbluray=enabled -Ddvdnav=enabled
           meson compile -C _b
 
