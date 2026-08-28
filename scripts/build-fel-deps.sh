@@ -25,6 +25,10 @@
 #   RUST_TARGET   cargo target for --cross (default: x86_64-pc-windows-gnu)
 #   SKIP_LIBDOVI  set to 1 to reuse a libdovi already on PKG_CONFIG_PATH
 set -euo pipefail
+# BDJ: sibling script scripts/build-libbluray-bdj.sh also builds libbluray into
+# fel-prefix with BD-J enabled; both scripts cooperate so their combined output
+# is the working "FEL + BD-J" set of shadow libraries. Both MUST install into
+# the same $PREFIX (fel-prefix) so pkg-config resolution succeeds in order.
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=../deps-fel/pins-fel.env
