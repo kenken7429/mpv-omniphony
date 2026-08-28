@@ -45,6 +45,40 @@ if [ "${BDJ_JAR}" = "enabled" ] && [ ! -f "${JAVA_HOME:-/does/not/exist}/include
     BDJ_JAR=disabled
 fi
 
+# --- MinGW cross JNI workaround ----------------------------------------------
+# libbluray meson computes include paths as $jdk_home/include and
+# $jdk_home/include/$os_subdir (win32 for target windows). The host JDK here
+# runs on Linux (inside the arch container) so $JAVA_HOME/include contains
+# jni.h and the platform-specific header lives under include/linux/jni_md.h —
+# but meson asks for include/win32/jni_md.h which doesn't exist.
+#
+# jni_md.h across Linux+Win x86_64 is functionally identical for our purposes
+# (both declare jint/jlong as signed 32/64-bit, both use the same JNI
+# calling-convention macros). JDK 11+ even merged the two headers for most
+# platforms. Work around the missing include/win32 directory by creating it
+# as a symlink to include/linux (or copy jni_md.h into it) for the build's
+# duration. We leave this symlink in place — CI containers are ephemeral.
+if [ "${BDJ_JAR}" = "enabled" ] && [ -n "${JAVA_HOME:-}" ]; then
+    PLAT_DIR="$JAVA_HOME/include/win32"
+    if [ ! -d "$PLAT_DIR" ]; then
+        if [ -d "$JAVA_HOME/include/linux" ]; then
+            ln -s "$JAVA_HOME/include/linux" "$PLAT_DIR" 2>/dev/null \
+              || mkdir -p "$PLAT_DIR" && cp "$JAVA_HOME/include/linux/jni_md.h" "$PLAT_DIR/"
+            echo "  + bdj workaround: JDK include/win32 -> include/linux (MinGW cross)"
+        else
+            # try darwin (unlikely but harmless)
+            if [ -d "$JAVA_HOME/include/darwin" ]; then
+                ln -s "$JAVA_HOME/include/darwin" "$PLAT_DIR" 2>/dev/null \
+                  || mkdir -p "$PLAT_DIR" && cp "$JAVA_HOME/include/darwin/jni_md.h" "$PLAT_DIR/"
+            else
+                echo "!! cannot find platform-specific jni_md.h under $JAVA_HOME/include/" >&2
+                ls "$JAVA_HOME/include/" || true
+                exit 1
+            fi
+        fi
+    fi
+fi
+
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 cd "$work"
@@ -82,6 +116,26 @@ fi
 meson setup _b "${meson_args[@]}"
 meson compile -C _b
 meson install -C _b
+
+# --- jar relocation ---------------------------------------------------------
+# See build-libbluray-bdj.sh: meson drops the jar in $SYS/share/java/ as
+# libbluray-j2se-<VERSION>.jar but the runtime loader probes share/libbluray/
+# libbluray.jar. Reproduce the same copy/symlink here.
+if [ "${BDJ_JAR}" = "enabled" ]; then
+  SHARE_JAVA="$SYS/share/java"
+  BDJ_DIR="$SYS/share/libbluray"
+  SRC="$(ls "$SHARE_JAVA"/libbluray-j2se-*.jar 2>/dev/null | head -1 || true)"
+  if [ -n "$SRC" ]; then
+    mkdir -p "$BDJ_DIR"
+    cp "$SRC" "$BDJ_DIR/libbluray.jar"
+    ln -sf "$(basename "$SRC")" "$SHARE_JAVA/libbluray.jar" 2>/dev/null || true
+    echo "  + placed $BDJ_DIR/libbluray.jar (from $(basename "$SRC"), $(du -h "$BDJ_DIR/libbluray.jar" | cut -f1))"
+  else
+    echo "!! meson install produced no libbluray-j2se-*.jar under $SHARE_JAVA" >&2
+    ls -la "$SHARE_JAVA" || true
+    exit 1
+  fi
+fi
 
 # `meson setup` above would already have failed if libudfread were unavailable
 # (the dependency() call is not optional). Assert the DLL + .pc actually landed

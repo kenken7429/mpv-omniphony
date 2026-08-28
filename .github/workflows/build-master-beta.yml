@@ -100,7 +100,6 @@ jobs:
           distribution: ${{ env.JAVA_DISTRO }}
           java-version: ${{ env.JAVA_VERSION }}
           architecture: x64
-          set-java-home: true
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -330,7 +329,6 @@ jobs:
           distribution: ${{ env.JAVA_DISTRO }}
           java-version: ${{ env.JAVA_VERSION }}
           architecture: aarch64
-          set-java-home: true
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable

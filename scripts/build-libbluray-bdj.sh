@@ -93,6 +93,35 @@ meson setup _b "${meson_args[@]}"
 ninja -C _b -j"$JOBS"
 ninja -C _b install
 
+# --- jar relocation ---------------------------------------------------------
+# libbluray 1.4.1 meson installs BD-J jars to $PREFIX/share/java/ as
+#   libbluray-j2se-<VERSION>.jar
+#   libbluray-awt-j2se-<VERSION>.jar
+# but the runtime loader (src/libbluray/bdj/bdjo_parser.c) hard-codes the
+# probe path as:
+#   <data-dir>/share/libbluray/libbluray.jar  (and BDJ_CLASSPATH override)
+# So after install we create $PREFIX/share/libbluray/libbluray.jar by copying
+# the versioned j2se jar there; the awt jar isn't needed (it only provides
+# java.awt.BufferedImage drawing, which libbluray never uses for menus).
+if [ "${BDJ_JAR}" = "enabled" ]; then
+  SHARE_JAVA="$PREFIX/share/java"
+  BDJ_DIR="$PREFIX/share/libbluray"
+  SRC="$(ls "$SHARE_JAVA"/libbluray-j2se-*.jar 2>/dev/null | head -1 || true)"
+  if [ -n "$SRC" ]; then
+    mkdir -p "$BDJ_DIR"
+    cp "$SRC" "$BDJ_DIR/libbluray.jar"
+    # Also drop the unversioned name alongside in share/java so downstream
+    # tools that look there still find it.
+    ln -sf "$(basename "$SRC")" "$SHARE_JAVA/libbluray.jar" 2>/dev/null || true
+    log "installed $BDJ_DIR/libbluray.jar (from $(basename "$SRC"), $(du -h "$BDJ_DIR/libbluray.jar" | cut -f1))"
+  else
+    echo "!! meson install produced no libbluray-j2se-*.jar under $SHARE_JAVA" >&2
+    echo "   contents of share/java:" >&2
+    ls -la "$SHARE_JAVA" || true
+    exit 1
+  fi
+fi
+
 # --- verification -----------------------------------------------------------
 # libbluray itself
 if [ "$(uname -s)" = "Darwin" ]; then
