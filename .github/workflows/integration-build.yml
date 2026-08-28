@@ -15,7 +15,7 @@ on:
     - cron: '0 5 * * *' # daily 05:00 UTC (after Omniphony's 04:00 build)
 
 env:
-  MPV_TAG: v0.41.0
+  MPV_TAG: master
   # Track the integration branch so the daily build always carries the latest
   # renderer. (release.yml pins a tag instead.)
   OMNIPHONY_REF: main
