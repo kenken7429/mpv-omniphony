@@ -35,6 +35,12 @@ env:
   # Rolling (cron/dispatch/path-push) builds track Omniphony main; a tagged beta
   # pins liborender to the matching release line for reproducibility.
   OMNIPHONY_REF: ${{ startsWith(github.ref, 'refs/tags/') && 'v0.5.0' || 'main' }}
+  # Java LTS used for BD-J (libbluray.jar compile + jlink runtime bundled on
+  # macOS/Linux). Temurin 21 LTS ships on all runners. BDJ is tied to the
+  # libbluray source build — it can't use distro/homebrew libbluray (those
+  # ship bdj_jar=disabled by default).
+  JAVA_VERSION: '21'
+  JAVA_DISTRO: 'temurin'
 
 jobs:
   # Resolve the live upstream libplacebo master HEAD once so every platform keys
@@ -65,18 +71,31 @@ jobs:
             libass-dev liblua5.2-dev \
             libvulkan-dev libshaderc-dev glslang-dev liblcms2-dev \
             libva-dev libdrm-dev libegl-dev libgl-dev \
-            libbluray-dev libdvdnav-dev libdvdread-dev \
+            libdvdnav-dev libdvdread-dev \
             libx11-dev libxss-dev libxext-dev libxpresent-dev libxrandr-dev \
             libwayland-dev wayland-protocols libxkbcommon-dev \
             libasound2-dev libpipewire-0.3-dev libpulse-dev \
             libopus-dev \
-            libffi-dev libexpat1-dev
+            libffi-dev libexpat1-dev \
+            fontconfig libfreetype-dev libxml2-dev
+          # NOTE: removed libbluray-dev — libbluray is rebuilt from source
+          # with BD-J (libbluray.jar + JVM linkage) below.
           # x11: libx11-dev alone is NOT enough — mpv's meson x11 feature also
           # requires xscrnsaver/xext/xpresent/xrandr, and silently disables the
           # whole X11 vo when any of them is missing (issue #59: assets shipped
           # with no windowed vo and no audio ao at all).
           # wayland: client lib + protocols + xkbcommon for vo_gpu on Wayland.
           # audio: ALSA + PipeWire + PulseAudio aos.
+          # fontconfig/freetype/libxml2-dev: deps for our libbluray rebuild
+          # (BDJ jar build needs these present on PKG_CONFIG_PATH).
+
+      - name: Setup JDK (for BD-J libbluray.jar + bundled jlink runtime)
+        uses: actions/setup-java@v4
+        with:
+          distribution: ${{ env.JAVA_DISTRO }}
+          java-version: ${{ env.JAVA_VERSION }}
+          architecture: x64
+          set-java-home: true
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -104,6 +123,33 @@ jobs:
           pkg-config --atleast-version=7.370 libplacebo
           echo "libplacebo $(pkg-config --modversion libplacebo)"
           ffmpeg -hide_banner -bsfs | grep -q dovi_split
+
+      # Replaces the apt libbluray-dev (bdj_jar=disabled). Installs into the
+      # same FEL prefix so our shadow PKG_CONFIG_PATH wins for the mpv build
+      # and the bundler finds the .so. Uses the JDK set up above for
+      # libbluray.jar (BD-J Java menus). Runs on every build (not cached) —
+      # libbluray alone is tiny compared to FEL libs.
+      - name: Build libbluray with BD-J (libbluray.jar + JVM linkage)
+        run: |
+          export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/fel-prefix/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+          export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/fel-prefix/lib:${LD_LIBRARY_PATH:-}"
+          echo "JAVA_HOME=$JAVA_HOME"
+          PREFIX="$GITHUB_WORKSPACE/fel-prefix" \
+          JAVA_HOME="$JAVA_HOME" \
+            bash scripts/build-libbluray-bdj.sh
+
+      # Build a slim jlink runtime (java.base only) and drop it into the FEL
+      # prefix so the packaging step bundles it. libbluray dlopen's
+      # $runtime/lib/server/libjvm.so; setting BLURAY_JVM_LIB_PATH at runtime
+      # is also honoured. ~55 MB uncompressed, ~22 MB zipped.
+      - name: Produce jlink jre (java.base) for Linux BD-J runtime
+        run: |
+          JR="$GITHUB_WORKSPACE/fel-prefix/share/libbluray/jre"
+          jlink --add-modules java.base --output "$JR" \
+                --strip-debug --no-man-pages --no-header-files --compress=2
+          test -f "$JR/lib/server/libjvm.so" \
+            || { echo "!! jlink output missing lib/server/libjvm.so" >&2; exit 1; }
+          echo "jre size: $(du -sh "$JR" | cut -f1)"
 
       # mpv master needs wayland-client/-cursor/-scanner >= 1.23 (hard meson
       # requirement) and in practice wayland-protocols >= 1.44: its meson floor
@@ -208,19 +254,35 @@ jobs:
           ldd _b/mpv | grep -q "$PREFIX/lib/libplacebo" \
             || { echo "!! mpv did not link the FEL libplacebo in $PREFIX" >&2; exit 1; }
 
-      - name: Package (zip, bundling FEL libs)
+      - name: Package (zip, bundling FEL libs + BD-J)
         run: |
           PREFIX="$GITHUB_WORKSPACE/fel-prefix"
-          mkdir -p staging staging/lib
+          mkdir -p staging staging/lib staging/share/libbluray
           cp "$MPV_DIR/_b/mpv" staging/
           cp sysroot/usr/lib/liborender.so.0 staging/lib/
           cp sysroot/usr/include/orender.h staging/
           cp README.md staging/
-          # Bundle the FEL libplacebo/ffmpeg/libdovi next to the binary and make
-          # mpv find them via rpath, so the zip actually renders FEL (otherwise it
-          # silently falls back to base layer against system libs).
-          cp -P "$PREFIX"/lib/lib{placebo,dovi,av*,sw*}*.so* staging/lib/ 2>/dev/null || true
+          # FEL libs (libplacebo/ffmpeg/libdovi) + our rebuilt libbluray (so)
+          cp -P "$PREFIX"/lib/lib{placebo,dovi,av*,sw*,bluray,udfread}*.so* staging/lib/ 2>/dev/null || true
+          # BD-J: libbluray.jar next to where libbluray.so looks for it at
+          # runtime (<prefix>/share/libbluray/libbluray.jar), and the jlinked
+          # jre so users don't need a system JRE.
+          if [ -f "$PREFIX/share/libbluray/libbluray.jar" ]; then
+            cp "$PREFIX/share/libbluray/libbluray.jar" staging/share/libbluray/
+            cp -R "$PREFIX/share/libbluray/jre" staging/share/libbluray/
+          fi
           patchelf --set-rpath '$ORIGIN/lib' staging/mpv
+          # Append a launcher README snippet (BD-J JVM hint)
+          cat > staging/BD_J_RUNTIME.md <<'README_BDJ'
+          # BD-J Blu-ray menus
+          This bundle ships libbluray.jar and a jlinked java.base JRE under
+          share/libbluray/. Set BLURAY_JVM_LIB_PATH at runtime if your libjvm
+          lives elsewhere:
+              export BLURAY_JVM_LIB_PATH="$PWD/share/libbluray/jre/lib/server/libjvm.so"
+              ./mpv --disc-menu=yes --bluray-device=disc.iso bd://
+          Most Disney/UHD discs use BD-J interactive menus; --disc-menu=yes is
+          required to enter them (otherwise mpv plays the main title directly).
+          README_BDJ
           cd staging
           zip -r "../mpv-omniphony-fel-linux-x86_64.zip" .
 
@@ -250,11 +312,20 @@ jobs:
           # PKG_CONFIG_PATH). molten-vk + vulkan-loader/-headers give the
           # Vulkan-on-Metal stack libplacebo's FEL path needs; cargo-c builds
           # libdovi (so build-fel-deps.sh skips its own `cargo install cargo-c`).
+          # NOTE: removed `libbluray` — rebuilt from source with BD-J below.
           brew install meson ninja pkg-config cargo-c \
             libass luajit lcms2 shaderc glslang \
             molten-vk vulkan-headers vulkan-loader \
-            libbluray libdvdnav libdvdread \
-            opus
+            libdvdnav libdvdread \
+            opus fontconfig freetype libxml2
+
+      - name: Setup JDK (for BD-J libbluray.jar compile + jlink runtime bundle)
+        uses: actions/setup-java@v4
+        with:
+          distribution: ${{ env.JAVA_DISTRO }}
+          java-version: ${{ env.JAVA_VERSION }}
+          architecture: aarch64
+          set-java-home: true
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -283,6 +354,41 @@ jobs:
           pkg-config --atleast-version=7.370 libplacebo
           echo "libplacebo $(pkg-config --modversion libplacebo)"
           "$GITHUB_WORKSPACE/fel-prefix/bin/ffmpeg" -hide_banner -bsfs | grep -q dovi_split
+
+      # Replaces brew libbluray (bdj_jar=disabled, no JVM linkage). Installs into
+      # the FEL prefix so the shadower PKG_CONFIG_PATH wins for the mpv meson
+      # build and the dylib relocator later finds our libbluray. The setup-java
+      # step above exposes JAVA_HOME for the jar build.
+      - name: Build libbluray with BD-J (libbluray.jar + JVM linkage)
+        run: |
+          export PKG_CONFIG_PATH="$GITHUB_WORKSPACE/fel-prefix/lib/pkgconfig:$(brew --prefix)/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+          export DYLD_LIBRARY_PATH="$GITHUB_WORKSPACE/fel-prefix/lib:${DYLD_LIBRARY_PATH:-}"
+          echo "JAVA_HOME=$JAVA_HOME"
+          # /usr/libexec/java_home on CI runners sometimes points at the system
+          # VM; prefer the setup-java-installed JDK explicitly.
+          PREFIX="$GITHUB_WORKSPACE/fel-prefix" \
+          JAVA_HOME="$JAVA_HOME" \
+            bash scripts/build-libbluray-bdj.sh
+
+      # Bundle a jlinked JRE (java.base) so users don't need a system install.
+      # macOS home: $JRE/Contents/Home/lib/server/libjvm.dylib (JDK-style).
+      # The jre itself is packaged as a pseudo .app folder so macOS respects
+      # quarantine / library loading; libbluray probes
+      # $libbluray_jvm_lib_path -> $BLURAY_JVM_LIB_PATH -> JAVA_HOME/lib.
+      - name: Produce jlink jre (java.base) for macOS BD-J runtime
+        run: |
+          JR="$GITHUB_WORKSPACE/fel-prefix/share/libbluray/jre"
+          # jlink on macOS produces a JDK-style layout (no Contents wrapper
+          # unless we build a full .app). Keep it flat so libbluray's dlopen
+          # probe succeeds with BLURAY_JVM_LIB_PATH pointing at lib/server.
+          jlink --add-modules java.base --output "$JR" \
+                --strip-debug --no-man-pages --no-header-files --compress=2
+          # jlink output layout on mac: lib/server/libjvm.dylib
+          JVMLIB="$JR/lib/server/libjvm.dylib"
+          [ -f "$JVMLIB" ] \
+            || { echo "!! jlink output missing lib/server/libjvm.dylib (looked: $JVMLIB)" >&2; \
+                 find "$JR" -name 'libjvm*' -type f; exit 1; }
+          echo "jre size: $(du -sh "$JR" | cut -f1)"
 
       - name: Checkout Omniphony (renderer source)
         uses: actions/checkout@v5
@@ -375,11 +481,11 @@ jobs:
           meson compile -C _b macos-bundle   # -> _b/mpv.app
 
           # dylib_unhell relocates the Homebrew deps but leaves our from-source
-          # FEL libplacebo/ffmpeg (under $PREFIX/fel-prefix) referenced by absolute
-          # path — they'd be missing on a clean Mac. Pull those (and any transitive
-          # deps) into the bundle's lib dir, matching dylib_unhell's layout
-          # (@executable_path/lib), with a small recursive worklist. Runs before
-          # the Brand step's codesign + leak gate.
+          # FEL libplacebo/ffmpeg/libbluray (under $PREFIX/fel-prefix) referenced
+          # by absolute path — they'd be missing on a clean Mac. Pull those (and
+          # any transitive deps) into the bundle's lib dir, matching
+          # dylib_unhell's layout (@executable_path/lib), with a small recursive
+          # worklist. Runs before the Brand step's codesign + leak gate.
           APP=_b/mpv.app
           LIBDIR="$APP/Contents/MacOS/lib"; mkdir -p "$LIBDIR"
           worklist=("$APP/Contents/MacOS/mpv")
@@ -399,31 +505,121 @@ jobs:
             done < <(otool -L "$obj" | awk 'NR>1 {print $1}' | grep -E "^($PREFIX|/opt/homebrew|/usr/local)/")
           done
 
+          # --- BD-J: libbluray.jar + jlinked JRE -----------------------------
+          # libbluray dlopen's the JVM via a few env-var probes (BLURAY_JVM_HOME,
+          # BLURAY_JVM_LIB_PATH, JAVA_HOME/lib). It also looks for libbluray.jar
+          # relative to its own install prefix — since we relink libbluray.dylib
+          # into @executable_path/lib we drop the jar + jre next to the
+          # executable under a share/libbluray/ sibling and set JAVA_HOME via a
+          # tiny launcher helper (the env vars are checked in-process; passing
+          # them from a wrapper shim is the simplest portable fix).
+          RES="$APP/Contents/Resources/libbluray"; mkdir -p "$RES"
+          if [ -f "$PREFIX/share/libbluray/libbluray.jar" ]; then
+            cp "$PREFIX/share/libbluray/libbluray.jar" "$RES/"
+            echo "  + libbluray.jar ($(du -h "$RES/libbluray.jar" | cut -f1))"
+          fi
+          JRE_DST="$RES/jre"
+          if [ -d "$PREFIX/share/libbluray/jre" ] && \
+             find "$PREFIX/share/libbluray/jre" -name 'libjvm*' -type f | grep -q .; then
+            cp -R "$PREFIX/share/libbluray/jre" "$JRE_DST"
+            # Rewrite absolute install_names inside the jlinked JRE's dylibs.
+            # jlink produces flat lib/ dylibs referenced by @rpath/libjli.dylib
+            # — flattening them into @loader_path/. suffices for libbluray's
+            # dlopen of libjvm.dylib (it's the leaf entry point).
+            if [ -f "$JRE_DST/lib/server/libjvm.dylib" ]; then
+              for d in "$JRE_DST/lib/"*.dylib "$JRE_DST/lib/server/"*.dylib; do
+                [ -f "$d" ] || continue
+                # make ids @loader_path-based and rewrite inter-references
+                id="@loader_path/$(basename "$d")"
+                install_name_tool -id "$id" "$d" 2>/dev/null || true
+                for r in $(otool -L "$d" | awk 'NR>1{print $1}' | grep -E "^($PREFIX|/opt/homebrew|/usr/local|${JAVA_HOME:-/no})"); do
+                  b="$(basename "$r")"
+                  # libjli.dylib is a sibling in lib/
+                  install_name_tool -change "$r" "@loader_path/$b" "$d" 2>/dev/null || true
+                done
+              done
+              echo "  + jre (java.base, $(du -sh "$JRE_DST" | cut -f1))"
+            else
+              echo "  ! warning: jre missing lib/server/libjvm.dylib — skipping bundle-in" >&2
+            fi
+          fi
+          # Drop a one-liner in Resources so we can confirm bundling later.
+          [ -f "$RES/libbluray.jar" ] && ls -la "$RES/" | tee "$RES/.bundled_bdj"
+
       - name: Brand, verify and package the .app
         run: |
           cd "$MPV_DIR/_b"
           mv mpv.app mpv-omniphony.app
+          APP=mpv-omniphony.app
           PB=/usr/libexec/PlistBuddy
-          "$PB" -c "Set :CFBundleIdentifier fr.mgth.mpv-omniphony" mpv-omniphony.app/Contents/Info.plist
-          "$PB" -c "Set :CFBundleName mpv-omniphony"               mpv-omniphony.app/Contents/Info.plist
-          "$PB" -c "Add :CFBundleDisplayName string mpv-omniphony" mpv-omniphony.app/Contents/Info.plist 2>/dev/null || true
-          codesign --force --deep --sign - mpv-omniphony.app
-          ./mpv-omniphony.app/Contents/MacOS/mpv --version
-          ./mpv-omniphony.app/Contents/MacOS/mpv --gpu-api=help | grep -qi vulkan \
+          "$PB" -c "Set :CFBundleIdentifier fr.mgth.mpv-omniphony" "$APP/Contents/Info.plist"
+          "$PB" -c "Set :CFBundleName mpv-omniphony"               "$APP/Contents/Info.plist"
+          "$PB" -c "Add :CFBundleDisplayName string mpv-omniphony" "$APP/Contents/Info.plist" 2>/dev/null || true
+
+          # --- BD-J launcher wrapper -----------------------------------------
+          # Replace the mpv executable with a bash shim that exports the env
+          # vars libbluray probes for (BLURAY_JVM_LIB_PATH, BLURAY_CLASSPATH)
+          # so double-clicking the app or running it from Spotlight gets BD-J
+          # menus without manual configuration. The shim is POSIX sh compatible
+          # and uses dirname "$0" so Finder's working-dir doesn't matter.
+          BIN="$APP/Contents/MacOS"
+          if [ -f "$BIN/mpv" ] && [ ! -L "$BIN/mpv" ]; then
+            mv "$BIN/mpv" "$BIN/mpv-bin"
+            cat > "$BIN/mpv" <<'SHIM'
+#!/bin/bash
+# Wrapper shim for mpv-omniphony — sets BD-J env vars then execs the real binary.
+HERE="$(cd "$(dirname "$0")" && pwd)"
+RES="$HERE/../Resources/libbluray"
+# libbluray dlopen's libjvm directly via BLURAY_JVM_LIB_PATH (overrides all
+# other probes — most reliable).
+if [ -f "$RES/jre/lib/server/libjvm.dylib" ]; then
+  export BLURAY_JVM_LIB_PATH="$RES/jre/lib/server/libjvm.dylib"
+elif [ -f "$RES/jre/lib/jli/libjli.dylib" ]; then
+  # Some jlink layouts on macOS use lib/jli/libjli.dylib as entry
+  export BLURAY_JVM_LIB_PATH="$RES/jre/lib/jli/libjli.dylib"
+fi
+# BLURAY_CLASSPATH lets users point at libbluray.jar; also set JAVA_HOME as a
+# fallback for older libbluray branches that only inspect JAVA_HOME/lib.
+if [ -f "$RES/libbluray.jar" ]; then
+  export BLURAY_CLASSPATH="$RES/libbluray.jar"
+  if [ -d "$RES/jre" ] && [ ! "${JAVA_HOME:-}" ]; then
+    export JAVA_HOME="$RES/jre"
+  fi
+fi
+exec "$HERE/mpv-bin" "$@"
+SHIM
+            chmod +x "$BIN/mpv"
+            echo "  + BD-J launcher shim installed (wrapper mpv -> mpv-bin)"
+          fi
+
+          # BDJ presence assertions — fail if either the jar or the jvm ended up
+          # missing (the user asked specifically for BD-J).
+          test -f "$APP/Contents/Resources/libbluray/libbluray.jar" \
+            || { echo "!! BD-J libbluray.jar not bundled into Resources/libbluray/" >&2; exit 1; }
+          find "$APP/Contents/Resources/libbluray/jre" -name 'libjvm*' -type f | grep -q . \
+            || { echo "!! BD-J jre bundle has no libjvm" >&2; find "$APP/Contents/Resources/libbluray/" || true; exit 1; }
+
+          codesign --force --deep --sign - "$APP"
+          "./$APP/Contents/MacOS/mpv-bin" --version
+          # Smoke: the wrapper must also work (it's what Finder/Spotlight use
+          # and what the CLI invokes).
+          "./$APP/Contents/MacOS/mpv" --version >/dev/null \
+            || { echo "!! wrapper launcher failed to execute" >&2; exit 1; }
+          "./$APP/Contents/MacOS/mpv-bin" --gpu-api=help | grep -qi vulkan \
             || echo "!! warning: vulkan gpu-api not listed (MoltenVK detection?)" >&2
-          test -f mpv-omniphony.app/Contents/Frameworks/libMoltenVK.dylib \
+          test -f "$APP/Contents/Frameworks/libMoltenVK.dylib" \
             || { echo "!! libMoltenVK.dylib not bundled" >&2; exit 1; }
-          test -f mpv-omniphony.app/Contents/Resources/vulkan/icd.d/MoltenVK_icd.json \
+          test -f "$APP/Contents/Resources/vulkan/icd.d/MoltenVK_icd.json" \
             || { echo "!! MoltenVK ICD not bundled" >&2; exit 1; }
           # The bundled libMoltenVK keeps its brew install id by design (dlopen'd
           # via the ICD's relative path); exclude it. Catch any other absolute
           # brew/local OR un-relocated FEL-prefix dependency.
-          leak=$(find mpv-omniphony.app -type f \( -name '*.dylib' -o -name mpv \) -print0 \
+          leak=$(find "$APP" -type f \( -name '*.dylib' -o -name mpv-bin \) -print0 \
                  | xargs -0 -I{} sh -c 'otool -L "{}" | awk "NR>1{print \$1}"' \
                  | grep -E "^(/opt/homebrew|/usr/local|$GITHUB_WORKSPACE)" \
                  | grep -v '/libMoltenVK\.dylib$' | sort -u || true)
           [ -z "$leak" ] || { echo "!! un-bundled absolute references remain:" >&2; echo "$leak" >&2; exit 1; }
-          zip -ry "${GITHUB_WORKSPACE}/mpv-omniphony-fel-macos-arm64.zip" mpv-omniphony.app
+          zip -ry "${GITHUB_WORKSPACE}/mpv-omniphony-fel-macos-arm64.zip" "$APP"
 
       - uses: actions/upload-artifact@v6
         with:
@@ -496,16 +692,20 @@ jobs:
             mingw-w64-vulkan-headers mingw-w64-vulkan-icd-loader \
             mingw-w64-shaderc mingw-w64-spirv-cross mingw-w64-lcms2 mingw-w64-zlib \
             mingw-w64-libdvdnav mingw-w64-libdvdread \
-            mingw-w64-opus
+            mingw-w64-opus \
+            jdk-openjdk
           # ^ DVD playback (folder + ISO) from Martchus; libdvdnav -> libdvdread
           # read images natively. libbluray is built from source with embedded
-          # libudfread in a later step (Martchus's lacks udfread = BD folders
-          # only); the DLL-walker in packaging bundles them all.
+          # libudfread + BD-J (jar) below. jdk-openjdk = HOST javac for the jar.
           # We build our OWN libplacebo (master) + ffmpeg (master) into the
           # MinGW sysroot below, so we intentionally do NOT install
           # mingw-w64-libplacebo / mingw-w64-ffmpeg here.
           rustup default stable
           rustup target add x86_64-pc-windows-gnu
+          # Make JAVA_HOME point at the Arch openjdk install so the libbluray
+          # meson build's `jdk_home` option resolves jni.h + javac.
+          JH="$(dirname "$(dirname "$(readlink -f "$(command -v javac)")")")"
+          echo "JAVA_HOME=$JH" >> "$GITHUB_ENV"
 
       - name: Install prebuilt cargo-c
         run: |
@@ -629,13 +829,21 @@ jobs:
           Cflags: -I\${includedir}
           EOF
 
-      - name: Build & install libbluray with BD-ISO (libudfread) support
+      - name: Build & install libbluray with BD-ISO (libudfread) + BD-J support
         run: |
           # Martchus ships libbluray without libudfread (BD folders only). Build
           # it from source with the vendored udfread embedded so raw BD ISOs
           # open; installs over the MinGW sysroot the mpv build below links to.
           # The cross-file was written above (Write meson cross-file step).
+          # BDJ: host JDK installed above, passed in JAVA_HOME so the meson
+          # build compiles libbluray.jar (cross-platform bytecode) using the
+          # host javac, and the native glue links a host jni.h layout. The
+          # resulting DLL looks for jvm.dll via %JAVA_HOME%\bin\server on the
+          # user's Windows machine.
+          echo "JAVA_HOME=$JAVA_HOME"
           CROSS_FILE="$GITHUB_WORKSPACE/sysroot/mingw-cross.ini" \
+          JAVA_HOME="$JAVA_HOME" \
+          BDJ_JAR=enabled \
             bash scripts/build-libbluray-mingw.sh
 
       - name: Download liborender (built from source)
@@ -685,16 +893,54 @@ jobs:
             -Dlibbluray=enabled -Ddvdnav=enabled
           meson compile -C _b
 
-      - name: Package (zip, DLL-walker bundles FEL DLLs from sysroot)
+      - name: Package (zip, DLL-walker bundles FEL DLLs + BD-J from sysroot)
         shell: bash
         run: |
           SYS=/usr/x86_64-w64-mingw32
-          mkdir -p staging
+          mkdir -p staging staging/share/libbluray
           cp "$MPV_DIR/_b/mpv.exe" staging/
           cp "$MPV_DIR/_b/mpv.com" staging/
           cp "$SYS/bin/orender.dll" staging/
           cp "$SYS/include/orender.h" staging/
           cp README.md staging/
+          if [ -f "$SYS/share/libbluray/libbluray.jar" ]; then
+            cp "$SYS/share/libbluray/libbluray.jar" staging/share/libbluray/
+            echo "  + libbluray.jar ($(du -h "$SYS/share/libbluray/libbluray.jar" | cut -f1))"
+          else
+            echo "!! libbluray.jar missing (BD-J not built); aborting per user spec." >&2
+            exit 1
+          fi
+          cat > staging/MPV-BD菜单启动.bat <<'WIN_BAT'
+@echo off
+REM Launch mpv with Blu-ray BD-J interactive menu support.
+REM Requires JRE 17+ installed (https://adoptium.net/).
+setlocal
+  set HERE=%~dp0
+  if exist "%HERE%share\libbluray\libbluray.jar" set BLURAY_CLASSPATH=%HERE%share\libbluray\libbluray.jar
+  if not "%JAVA_HOME%"=="" set BLURAY_JVM_LIB_PATH=%JAVA_HOME%\bin\server\jvm.dll
+  "%HERE%mpv.exe" --disc-menu=yes --bluray-device=%*
+endlocal
+WIN_BAT
+          cat > staging/BD_J_运行说明.txt <<'WIN_TXT'
+Blu-ray BD-J 菜单说明
+====================
+本压缩包已包含 libbluray.jar（BD-J Java 菜单编译产物），
+放在 share/libbluray/libbluray.jar。
+
+想要进入蓝光菜单，还需要 Windows 机器已安装 JRE 17+
+（推荐 Adoptium Temurin：https://adoptium.net/，JRE 约 55MB，
+libbluray 通过 JAVA_HOME 查找 bin\server\jvm.dll）。
+
+命令行使用：
+  MPV-BD菜单启动.bat  "D:\蓝光\我的碟.iso"
+或直接：
+  set BLURAY_CLASSPATH=<解压目录>\share\libbluray\libbluray.jar
+  set BLURAY_JVM_LIB_PATH=C:\Program Files\Eclipse Adoptium\jre-21\bin\server\jvm.dll
+  mpv.exe --disc-menu=yes --bluray-device="D:\蓝光\我的碟.iso" bd://
+
+Disney/UHD 碟大多使用 BD-J 菜单；如不启用 --disc-menu，
+mpv 会直接播放主片而跳过菜单。
+WIN_TXT
           should_skip() {
             case "$1" in
               KERNEL32.*|USER32.*|GDI32.*|ADVAPI32.*|MSVCRT.*|SHELL32.*|ole32.*|OLEAUT32.*|WS2_32.*|IMM32.*|VERSION.*|WINMM.*|d3d*|dxgi*|opengl32.*|setupapi.*|RPCRT4.*|bcrypt.*|CRYPT32.*|comdlg32.*|netapi32.*|powrprof.*|psapi.*|userenv.*|wininet.*|wintrust.*|comctl32.*|iphlpapi.*|secur32.*|uxtheme.*|dwmapi.*|crypt32.*|ncrypt.*|dnsapi.*|mpr.*|mswsock.*|odbc32.*|odbccp32.*|VCRUNTIME*|api-ms-*)
