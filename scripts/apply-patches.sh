@@ -16,10 +16,11 @@ mkdir -p "$WORKDIR"
 
 if [ ! -d "$SRC/.git" ]; then
     echo ">> cloning mpv $MPV_TAG"
-    git clone --depth 1 --branch "$MPV_TAG" "$MPV_URL" "$SRC"
+    # Full clone (not --depth 1) so 3-way merge has the necessary blobs
+    git clone --branch "$MPV_TAG" "$MPV_URL" "$SRC"
 else
     echo ">> reusing existing clone at $SRC"
-    git -C "$SRC" reset --hard "tags/$MPV_TAG"
+    git -C "$SRC" reset --hard "$MPV_TAG"
     git -C "$SRC" clean -fdx
 fi
 
@@ -33,7 +34,11 @@ fi
 echo ">> applying ${#patches[@]} patch(es)"
 for p in "${patches[@]}"; do
     echo "   - $(basename "$p")"
-    git -C "$SRC" apply --3way "$p"
+    # Try 3-way merge first, then fallback to fuzz matching for master compatibility
+    git -C "$SRC" apply --3way "$p" || {
+        echo "   ! 3-way failed, trying fuzz match..."
+        patch -d "$SRC" -p1 --fuzz=3 < "$p"
+    }
 done
 
 echo ">> done. Build with:"
