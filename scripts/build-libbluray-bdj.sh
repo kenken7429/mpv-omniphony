@@ -94,28 +94,68 @@ ninja -C _b -j"$JOBS"
 ninja -C _b install
 
 # --- jar relocation ---------------------------------------------------------
-# libbluray 1.4.1 meson installs BD-J jars to $PREFIX/share/java/ as
-#   libbluray-j2se-<VERSION>.jar
-#   libbluray-awt-j2se-<VERSION>.jar
-# but the runtime loader (src/libbluray/bdj/bdjo_parser.c) hard-codes the
-# probe path as:
-#   <data-dir>/share/libbluray/libbluray.jar  (and BDJ_CLASSPATH override)
-# So after install we create $PREFIX/share/libbluray/libbluray.jar by copying
-# the versioned j2se jar there; the awt jar isn't needed (it only provides
-# java.awt.BufferedImage drawing, which libbluray never uses for menus).
+# libbluray 1.4.1 meson installs TWO BD-J jars to $PREFIX/share/java/:
+#   libbluray-<TYPE>-<VERSION>.jar    (main jar: classes for --patch-module java.base)
+#   libbluray-awt-<TYPE>-<VERSION>.jar (awt jar: java.awt/sun/* classes only for java.desktop patch)
+#
+# BOTH jars MUST remain side by side with their meson-produced versioned names
+# (NOT renamed to libbluray.jar). libbluray's _find_libbluray_jar1() in
+# src/libbluray/bdj/bdj.c reconstructs the awt jar name from the main jar's
+# basename by slicing off "-<TYPE>-<VERSION>.jar" and inserting "awt-":
+#   cut = len(jar0) - len(VERSION) - 9
+#   jar1 = jar0[:cut] + "awt-" + jar0[cut:]
+# where the "- 9" accounts for "-<TYPE>-<VERSION>.jar" length. Any rename
+# that breaks this string slicing silently causes jar1 to return NULL, which
+# then frees classpath[0] too, producing the infamous "libbluray.jar: 0" stat.
+#
+# The runtime loader also probes:
+#   LIBBLURAY_CP env var          (checked FIRST — we use this in wrappers)
+#   $libdir/../share/java/libbluray.jar
+#   <jar_paths[] hardcoded system paths>
+# so we additionally:
+#   (a) copy BOTH versioned jars verbatim into $PREFIX/share/libbluray/, and
+#   (b) create a $PREFIX/share/libbluray/libbluray.jar COPY of the main j2se
+#       jar as a last-resort fallback for loaders that only know the unversioned
+#       name (wrappers must still prefer LIBBLURAY_CP pointing at the
+#       VERSIONED main jar so the string-slicing trick works).
 if [ "${BDJ_JAR}" = "enabled" ]; then
   SHARE_JAVA="$PREFIX/share/java"
   BDJ_DIR="$PREFIX/share/libbluray"
-  SRC="$(ls "$SHARE_JAVA"/libbluray-j2se-*.jar 2>/dev/null | head -1 || true)"
-  if [ -n "$SRC" ]; then
+  SRC_J2SE="$(ls "$SHARE_JAVA"/libbluray-"${BDJ_TYPE}"-*.jar 2>/dev/null | head -1 || true)"
+  SRC_AWT="$(ls "$SHARE_JAVA"/libbluray-awt-"${BDJ_TYPE}"-*.jar 2>/dev/null | head -1 || true)"
+  if [ -n "$SRC_J2SE" ]; then
     mkdir -p "$BDJ_DIR"
-    cp "$SRC" "$BDJ_DIR/libbluray.jar"
-    # Also drop the unversioned name alongside in share/java so downstream
-    # tools that look there still find it.
-    ln -sf "$(basename "$SRC")" "$SHARE_JAVA/libbluray.jar" 2>/dev/null || true
-    log "installed $BDJ_DIR/libbluray.jar (from $(basename "$SRC"), $(du -h "$BDJ_DIR/libbluray.jar" | cut -f1))"
+    J2SE_BASE="$(basename "$SRC_J2SE")"
+    AWT_BASE=""
+    # Copy the versioned main jar VERBATIM (keep name intact for jar1 slicing).
+    cp -p "$SRC_J2SE" "$BDJ_DIR/$J2SE_BASE"
+    # Also copy the awt jar (produced by the same meson <custom_target>)
+    # next to it. If it's missing (older libbluray builds or bdj_type=j2me
+    # might not build one) then fall back: libbluray tolerates a missing awt
+    # jar by printing a warning, but the Java 9+ module graph setup breaks
+    # without it — so we prefer loudly failing if absent.
+    if [ -n "$SRC_AWT" ]; then
+      AWT_BASE="$(basename "$SRC_AWT")"
+      cp -p "$SRC_AWT" "$BDJ_DIR/$AWT_BASE"
+    else
+      echo "!! meson install produced no libbluray-awt-${BDJ_TYPE}-*.jar under $SHARE_JAVA" >&2
+      echo "   contents of share/java:" >&2
+      ls -la "$SHARE_JAVA" || true
+      exit 1
+    fi
+    # Last-resort unversioned fallback: copy main jar as plain libbluray.jar.
+    # Wrappers should NOT point LIBBLURAY_CP at this copy (its name breaks
+    # the jar1 slicing), but it's useful for any fallback probing paths.
+    cp -p "$SRC_J2SE" "$BDJ_DIR/libbluray.jar"
+    # Also make share/java/libbluray.jar findable for tools that read only that
+    # path (e.g. some pkg-config based loaders).
+    ln -sf "$J2SE_BASE" "$SHARE_JAVA/libbluray.jar" 2>/dev/null || true
+    log "installed BDJ jars under $BDJ_DIR/"
+    log "  main (java.base):  $J2SE_BASE  ($(du -h "$BDJ_DIR/$J2SE_BASE" | cut -f1))"
+    log "  awt  (java.desktop): $AWT_BASE  ($(du -h "$BDJ_DIR/$AWT_BASE" | cut -f1))"
+    log "  fallback (unversioned): libbluray.jar (copy of j2se)"
   else
-    echo "!! meson install produced no libbluray-j2se-*.jar under $SHARE_JAVA" >&2
+    echo "!! meson install produced no libbluray-${BDJ_TYPE}-*.jar under $SHARE_JAVA" >&2
     echo "   contents of share/java:" >&2
     ls -la "$SHARE_JAVA" || true
     exit 1
@@ -134,13 +174,24 @@ fi
 # pkg-config
 pkg-config --exists libbluray \
   || { echo "!! libbluray.pc not visible" >&2; PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:$PKG_CONFIG_PATH" pkg-config --exists libbluray || exit 1; }
-# libbluray.jar when enabled
+# libbluray.jar when enabled: check versioned j2se + awt jars first, then the
+# unversioned fallback. The wrappers point LIBBLURAY_CP at the j2se versioned
+# jar so libbluray's _find_libbluray_jar1() can reconstruct the awt jar name.
 if [ "${BDJ_JAR}" = "enabled" ]; then
-    jar="$PREFIX/share/libbluray/libbluray.jar"
-    if [ -f "$jar" ]; then
-        log "libbluray.jar: $(basename "$jar") ($(du -h "$jar" | cut -f1))"
+    jar_j2se="$(ls "$PREFIX/share/libbluray/libbluray-${BDJ_TYPE}"-*.jar 2>/dev/null | grep -v awt | head -1 || true)"
+    jar_awt="$(ls "$PREFIX/share/libbluray/libbluray-awt-${BDJ_TYPE}"-*.jar 2>/dev/null | head -1 || true)"
+    jar_fb="$PREFIX/share/libbluray/libbluray.jar"
+    found_all=1
+    [ -n "$jar_j2se" ] && [ -f "$jar_j2se" ] || { echo "!! versioned j2se jar missing under $PREFIX/share/libbluray/" >&2; found_all=0; }
+    [ -n "$jar_awt"  ] && [ -f "$jar_awt"  ] || { echo "!! versioned awt jar missing under $PREFIX/share/libbluray/"  >&2; found_all=0; }
+    [ -f "$jar_fb"   ] || { echo "!! unversioned fallback jar missing at $jar_fb" >&2; found_all=0; }
+    if [ "$found_all" = "1" ]; then
+        log "BD-J jars:"
+        log "  j2se : $jar_j2se ($(du -h "$jar_j2se" | cut -f1))"
+        log "  awt  : $jar_awt  ($(du -h "$jar_awt" | cut -f1))"
+        log "  fb   : $jar_fb ($(du -h "$jar_fb" | cut -f1))"
     else
-        echo "!! expected libbluray.jar at $jar not found (meson install step?)" >&2
+        echo "   contents of $PREFIX/share/libbluray/:" >&2; ls -la "$PREFIX/share/libbluray/" || true
         exit 1
     fi
 fi

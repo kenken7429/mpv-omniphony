@@ -1,11 +1,17 @@
 Blu-ray BD-J 菜单运行说明（Windows）
 =====================================
 
-1. 本压缩包已包含 libbluray.jar —— BD-J（蓝光 Java 菜单）的编译产物，
-   放在 share\libbluray\libbluray.jar。mpv 执行 --disc-menu=yes 时，
-   libbluray 会加载这个 jar 并启动 Java 虚拟机，然后渲染碟片自带的
-   交互式菜单（Disney/UHD 碟几乎都用 BD-J 菜单；如果禁用会直接进入
-   主片播放）。
+1. 本压缩包已包含 3 份 jar —— BD-J（蓝光 Java 菜单）的编译产物，都
+   放在 share\libbluray\ 下：
+     • libbluray-j2se-1.4.1.jar     （主 BD-J 类，--patch-module java.base）
+     • libbluray-awt-j2se-1.4.1.jar （AWT 补丁，--patch-module java.desktop）
+     • libbluray.jar                 （向后兼容兜底副本）
+   mpv 执行 --disc-menu=yes 时，libbluray 会通过 LIBBLURAY_CP 读取
+   「版本号命名的 j2se jar」，然后用字符串公式自动找到 awt jar 并加载
+   JVM，最后渲染碟片自带的交互式菜单（Disney/UHD 碟几乎都用 BD-J 菜单；
+   如果禁用会直接进入主片播放）。
+   👉 重要：不要把 LIBBLURAY_CP 指向兜底的 libbluray.jar，否则版本号
+   切片公式算出来的 awt jar 名为 NULL，最终依然会报 libbluray.jar=0。
 
 2. 仍然需要你在 Windows 上安装 JRE 17+（JVM 运行时）才能真正进入
    菜单。本压缩包不附带 jvm.dll（一个完整的 JRE 约 80 MB，且 Eclipse
@@ -26,15 +32,19 @@ Blu-ray BD-J 菜单运行说明（Windows）
           MPV-BD菜单启动.bat  "D:\蓝光\壮志凌云2.iso"
 
    B. 直接用 mpv.exe：
-          set BLURAY_CLASSPATH=<解压目录>\share\libbluray\libbluray.jar
+          set LIBBLURAY_CP=<解压目录>\share\libbluray\libbluray-j2se-1.4.1.jar
           set BLURAY_JVM_LIB_PATH=%JAVA_HOME%\bin\server\jvm.dll
           mpv.exe --disc-menu=yes --bluray-device="D:\蓝光\碟.iso"  bd://
 
 4. 常见问题
    --------
    • 看到 "BD-J menus not supported. Java VM: 0, libbluray.jar: 0"：
-       – libbluray.jar=0：jar 没放到 share\libbluray\ 下 —— 确认解压后
-         目录结构里存在 share\libbluray\libbluray.jar。
+       – libbluray.jar=0：常见原因是 LIBBLURAY_CP 指向了不带版本号的
+         libbluray.jar（导致 jar 名切片公式算出 awt jar=NULL，libbluray
+         会把两个 classpath slot 一起清空 → 表现为 jar=0）。正确写法：
+         set LIBBLURAY_CP=…\share\libbluray\libbluray-j2se-1.4.1.jar
+         同时确认 share\libbluray\ 下同时存在 libbluray-j2se-1.4.1.jar
+         与 libbluray-awt-j2se-1.4.1.jar 两份 jar。
        – Java VM=0：JVM 没被加载 —— 确认 %JAVA_HOME% 存在且指向的目录
          下有 bin\server\jvm.dll（第 2 步的 JRE 安装 + 勾选 JAVA_HOME）。
    • 菜单出来但全英文：是碟片自带的原始 BD-J 菜单，我们只解决 "能加载"；

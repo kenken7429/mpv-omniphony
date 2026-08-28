@@ -142,17 +142,30 @@ jobs:
           JAVA_HOME="$JAVA_HOME" \
             bash scripts/build-libbluray-bdj.sh
 
-      # Build a slim jlink runtime (java.base only) and drop it into the FEL
+      # Build a jlink runtime (NOT just java.base) and drop it into the FEL
       # prefix so the packaging step bundles it. libbluray dlopen's
       # $runtime/lib/server/libjvm.so; setting BLURAY_JVM_LIB_PATH at runtime
-      # is also honoured. ~55 MB uncompressed, ~22 MB zipped.
-      - name: Produce jlink jre (java.base) for Linux BD-J runtime
+      # is also honoured.
+      #
+      # MODULE RATIONALE — libbluray 1.4.1 splits its jar files into two:
+      #   libbluray-j2se-VERSION.jar  → patched into java.base (--patch-module)
+      #   libbluray-awt-j2se-VERSION.jar → patched into java.desktop (--patch-module)
+      # The Java-side of BD-J additionally references java.rmi.Remote via
+      # IxcRegistryImpl and org/videolan/FontIndex class uses javax.xml. A
+      # java.base-only JRE causes a ResolutionException (java.desktop doesn't
+      # exist as target of --patch-module) immediately at JVM boot. Including
+      # java.desktop/xml/logging/rmi/prefs keeps the module graph consistent.
+      # (java.datatransfer is pulled in automatically as dep of java.desktop.)
+      - name: Produce jlink jre (java.base+desktop+xml+logging+prefs+rmi) for Linux BD-J
         run: |
           JR="$GITHUB_WORKSPACE/fel-prefix/share/libbluray/jre"
-          jlink --add-modules java.base --output "$JR" \
+          jlink --add-modules java.base,java.desktop,java.xml,java.logging,java.prefs,java.rmi \
+                --output "$JR" \
                 --strip-debug --no-man-pages --no-header-files --compress=2
           test -f "$JR/lib/server/libjvm.so" \
             || { echo "!! jlink output missing lib/server/libjvm.so" >&2; exit 1; }
+          "$JR/bin/java" --list-modules | grep -E '^java\.(base|desktop|xml|logging|prefs|rmi)@' \
+            || { echo "!! jlink output missing one or more required modules" >&2; "$JR/bin/java" --list-modules; exit 1; }
           echo "jre size: $(du -sh "$JR" | cut -f1)"
 
       # mpv master needs wayland-client/-cursor/-scanner >= 1.23 (hard meson
@@ -268,21 +281,35 @@ jobs:
           cp README.md staging/
           # FEL libs (libplacebo/ffmpeg/libdovi) + our rebuilt libbluray (so)
           cp -P "$PREFIX"/lib/lib{placebo,dovi,av*,sw*,bluray,udfread}*.so* staging/lib/ 2>/dev/null || true
-          # BD-J: libbluray.jar next to where libbluray.so looks for it at
-          # runtime (<prefix>/share/libbluray/libbluray.jar), and the jlinked
-          # jre so users don't need a system JRE.
-          if [ -f "$PREFIX/share/libbluray/libbluray.jar" ]; then
-            cp "$PREFIX/share/libbluray/libbluray.jar" staging/share/libbluray/
+          # BD-J: libbluray-j2se-VERSION.jar (main BD-J classes),
+          # libbluray-awt-j2se-VERSION.jar (java.desktop patch content), and
+          # libbluray.jar (fallback copy for old callers) — all three live next
+          # to where libbluray.so probes. The wrapper sets LIBBLURAY_CP at the
+          # VERSIONED j2se jar so libbluray's internal string formula
+          # (_find_libbluray_jar1) can derive the awt jar name correctly.
+          # The jlinked jre ships bundled so users don't need a system JRE.
+          if ls "$PREFIX/share/libbluray"/libbluray-j2se-*.jar >/dev/null 2>&1; then
+            cp "$PREFIX/share/libbluray"/libbluray-j2se-*.jar staging/share/libbluray/
+            cp "$PREFIX/share/libbluray"/libbluray-awt-j2se-*.jar staging/share/libbluray/ 2>/dev/null || true
+            [ -f "$PREFIX/share/libbluray/libbluray.jar" ] && \
+              cp "$PREFIX/share/libbluray/libbluray.jar" staging/share/libbluray/
             cp -R "$PREFIX/share/libbluray/jre" staging/share/libbluray/
+            ls -la staging/share/libbluray/
           fi
           patchelf --set-rpath '$ORIGIN/lib' staging/mpv
           # Append a launcher README snippet (BD-J JVM hint)
           cat > staging/BD_J_RUNTIME.md <<'README_BDJ'
           # BD-J Blu-ray menus
-          This bundle ships libbluray.jar and a jlinked java.base JRE under
-          share/libbluray/. Set BLURAY_JVM_LIB_PATH at runtime if your libjvm
-          lives elsewhere:
+          This bundle ships three libbluray jars and a jlinked 6-module JRE
+          under share/libbluray/:
+            - libbluray-j2se-VERSION.jar      (main BD-J classes → patches java.base)
+            - libbluray-awt-j2se-VERSION.jar  (AWT-only BD-J classes → patches java.desktop)
+            - libbluray.jar                   (fallback copy for legacy callers)
+            - jre/                            (built with java.base,java.desktop,java.xml,java.logging,java.prefs,java.rmi)
+          The wrapper exports LIBBLURAY_CP pointing at the versioned j2se jar.
+          If libjvm lives elsewhere, override BLURAY_JVM_LIB_PATH:
               export BLURAY_JVM_LIB_PATH="$PWD/share/libbluray/jre/lib/server/libjvm.so"
+              export LIBBLURAY_CP="$PWD/share/libbluray/libbluray-j2se-$(ls share/libbluray/libbluray-j2se-*.jar | sed 's/.*j2se-//;s/\.jar//').jar"
               ./mpv --disc-menu=yes --bluray-device=disc.iso bd://
           Most Disney/UHD discs use BD-J interactive menus; --disc-menu=yes is
           required to enter them (otherwise mpv plays the main title directly).
@@ -373,24 +400,29 @@ jobs:
           JAVA_HOME="$JAVA_HOME" \
             bash scripts/build-libbluray-bdj.sh
 
-      # Bundle a jlinked JRE (java.base) so users don't need a system install.
-      # macOS home: $JRE/Contents/Home/lib/server/libjvm.dylib (JDK-style).
-      # The jre itself is packaged as a pseudo .app folder so macOS respects
-      # quarantine / library loading; libbluray probes
-      # $libbluray_jvm_lib_path -> $BLURAY_JVM_LIB_PATH -> JAVA_HOME/lib.
-      - name: Produce jlink jre (java.base) for macOS BD-J runtime
+      # Bundle a jlinked JRE (NOT just java.base) so users don't need a system
+      # install. MODULE RATIONALE — see Linux jlink step comment: libbluray
+      # 1.4.1 patches BOTH java.base (j2se jar) and java.desktop (awt jar), so
+      # a java.base-only JRE triggers ResolutionException. We also need
+      # java.rmi (IxcRegistryImpl) / java.xml (FontIndex javax.xml) /
+      # java.logging / java.prefs for the module graph to stay consistent.
+      # macOS home: $JRE/lib/server/libjvm.dylib (flat layout, no Contents).
+      - name: Produce jlink jre (java.base+desktop+xml+logging+prefs+rmi) for macOS BD-J
         run: |
           JR="$GITHUB_WORKSPACE/fel-prefix/share/libbluray/jre"
           # jlink on macOS produces a JDK-style layout (no Contents wrapper
           # unless we build a full .app). Keep it flat so libbluray's dlopen
           # probe succeeds with BLURAY_JVM_LIB_PATH pointing at lib/server.
-          jlink --add-modules java.base --output "$JR" \
+          jlink --add-modules java.base,java.desktop,java.xml,java.logging,java.prefs,java.rmi \
+                --output "$JR" \
                 --strip-debug --no-man-pages --no-header-files --compress=2
           # jlink output layout on mac: lib/server/libjvm.dylib
           JVMLIB="$JR/lib/server/libjvm.dylib"
           [ -f "$JVMLIB" ] \
             || { echo "!! jlink output missing lib/server/libjvm.dylib (looked: $JVMLIB)" >&2; \
                  find "$JR" -name 'libjvm*' -type f; exit 1; }
+          "$JR/bin/java" --list-modules | grep -E '^java\.(base|desktop|xml|logging|prefs|rmi)@' \
+            || { echo "!! jlink output missing one or more required modules" >&2; "$JR/bin/java" --list-modules; exit 1; }
           echo "jre size: $(du -sh "$JR" | cut -f1)"
 
       - name: Checkout Omniphony (renderer source)
@@ -508,18 +540,39 @@ jobs:
             done < <(otool -L "$obj" | awk 'NR>1 {print $1}' | grep -E "^($PREFIX|/opt/homebrew|/usr/local)/")
           done
 
-          # --- BD-J: libbluray.jar + jlinked JRE -----------------------------
+          # --- BD-J: 3 jars + jlinked 6-module JRE --------------------------
           # libbluray dlopen's the JVM via a few env-var probes (BLURAY_JVM_HOME,
           # BLURAY_JVM_LIB_PATH, JAVA_HOME/lib). It also looks for libbluray.jar
           # relative to its own install prefix — since we relink libbluray.dylib
-          # into @executable_path/lib we drop the jar + jre next to the
-          # executable under a share/libbluray/ sibling and set JAVA_HOME via a
-          # tiny launcher helper (the env vars are checked in-process; passing
-          # them from a wrapper shim is the simplest portable fix).
+          # into @executable_path/lib we drop the jars + jre under
+          # Contents/Resources/libbluray/ and set LIBBLURAY_CP/JAVA_HOME from a
+          # tiny launcher wrapper (the env vars are checked in-process; passing
+          # them from a shim is the simplest portable fix).
+          #
+          # NOTE on THREE jars (libbluray 1.4.1 meson -Dbdj_jar=enabled):
+          #   1. libbluray-j2se-VERSION.jar     → non-AWT BD-J classes, --patch-module java.base
+          #   2. libbluray-awt-j2se-VERSION.jar → ONLY java/awt/** sun/**, --patch-module java.desktop
+          #   3. libbluray.jar                  → byte-identical copy of (1) for legacy fallback callers
+          #
+          # Wrapper must pass LIBBLURAY_CP = (1) the VERSIONED j2se jar name,
+          # because libbluray's internal _find_libbluray_jar1() derives the awt
+          # jar (2)'s path from the j2se jar (1)'s name via a fixed string-slice
+          # formula. Renaming the jar or passing the unversioned libbluray.jar
+          # breaks that formula and results in "libbluray.jar: 0" in the log.
           RES="$APP/Contents/Resources/libbluray"; mkdir -p "$RES"
-          if [ -f "$PREFIX/share/libbluray/libbluray.jar" ]; then
-            cp "$PREFIX/share/libbluray/libbluray.jar" "$RES/"
-            echo "  + libbluray.jar ($(du -h "$RES/libbluray.jar" | cut -f1))"
+          if ls "$PREFIX/share/libbluray"/libbluray-j2se-*.jar >/dev/null 2>&1; then
+            cp "$PREFIX/share/libbluray"/libbluray-j2se-*.jar "$RES/"
+            J2SE_NAME="$(ls "$RES"/libbluray-j2se-*.jar | xargs -n1 basename)"
+            echo "  + $J2SE_NAME ($(du -h "$RES/$J2SE_NAME" | cut -f1))"
+            if ls "$PREFIX/share/libbluray"/libbluray-awt-j2se-*.jar >/dev/null 2>&1; then
+              cp "$PREFIX/share/libbluray"/libbluray-awt-j2se-*.jar "$RES/"
+              AWT_NAME="$(ls "$RES"/libbluray-awt-j2se-*.jar | xargs -n1 basename)"
+              echo "  + $AWT_NAME ($(du -h "$RES/$AWT_NAME" | cut -f1))"
+            fi
+            if [ -f "$PREFIX/share/libbluray/libbluray.jar" ]; then
+              cp "$PREFIX/share/libbluray/libbluray.jar" "$RES/"
+              echo "  + libbluray.jar fallback ($(du -h "$RES/libbluray.jar" | cut -f1))"
+            fi
           fi
           JRE_DST="$RES/jre"
           if [ -d "$PREFIX/share/libbluray/jre" ] && \
@@ -541,13 +594,13 @@ jobs:
                   install_name_tool -change "$r" "@loader_path/$b" "$d" 2>/dev/null || true
                 done
               done
-              echo "  + jre (java.base, $(du -sh "$JRE_DST" | cut -f1))"
+              echo "  + jre (6-mod: base/desktop/xml/logging/prefs/rmi, $(du -sh "$JRE_DST" | cut -f1))"
             else
               echo "  ! warning: jre missing lib/server/libjvm.dylib — skipping bundle-in" >&2
             fi
           fi
           # Drop a one-liner in Resources so we can confirm bundling later.
-          [ -f "$RES/libbluray.jar" ] && ls -la "$RES/" | tee "$RES/.bundled_bdj"
+          ls -la "$RES/" | tee "$RES/.bundled_bdj" || true
 
       - name: Brand, verify and package the .app
         run: |
@@ -562,7 +615,7 @@ jobs:
           # --- BD-J launcher wrapper -----------------------------------------
           # Replace the mpv executable with a POSIX sh shim (checked into
           # scripts/mpv-bdj-launcher-macos.sh) that sets BLURAY_JVM_LIB_PATH /
-          # BLURAY_CLASSPATH / JAVA_HOME before exec'ing the real binary.
+          # LIBBLURAY_CP / JAVA_HOME before exec'ing the real binary.
           # The shim does NOT depend on working dir — uses dirname "$0".
           BIN="$APP/Contents/MacOS"
           if [ -f "$BIN/mpv" ] && [ ! -L "$BIN/mpv" ]; then
@@ -572,12 +625,21 @@ jobs:
             echo "  + BD-J launcher shim installed (wrapper mpv -> mpv-bin)"
           fi
 
-          # BDJ presence assertions — fail if either the jar or the jvm ended up
-          # missing (the user asked specifically for BD-J).
+          # BDJ presence assertions — fail if any of the 3 jars or the jvm
+          # ended up missing (the user asked specifically for BD-J). We assert
+          # (1) versioned j2se jar present, (2) versioned awt jar present,
+          # (3) fallback libbluray.jar present, (4) jre has libjvm.
+          J2SE_CNT=$(find "$APP/Contents/Resources/libbluray" -maxdepth 1 -name 'libbluray-j2se-*.jar' -type f | wc -l | tr -d ' ')
+          AWT_CNT=$(find "$APP/Contents/Resources/libbluray" -maxdepth 1 -name 'libbluray-awt-j2se-*.jar' -type f | wc -l | tr -d ' ')
+          [ "$J2SE_CNT" -ge 1 ] \
+            || { echo "!! BD-J versioned libbluray-j2se-VERSION.jar not bundled in Resources/libbluray/ (found $J2SE_CNT)" >&2; exit 1; }
+          [ "$AWT_CNT" -ge 1 ] \
+            || { echo "!! BD-J versioned libbluray-awt-j2se-VERSION.jar not bundled in Resources/libbluray/ (found $AWT_CNT)" >&2; exit 1; }
           test -f "$APP/Contents/Resources/libbluray/libbluray.jar" \
-            || { echo "!! BD-J libbluray.jar not bundled into Resources/libbluray/" >&2; exit 1; }
+            || { echo "!! BD-J fallback libbluray.jar not bundled into Resources/libbluray/" >&2; exit 1; }
           find "$APP/Contents/Resources/libbluray/jre" -name 'libjvm*' -type f | grep -q . \
             || { echo "!! BD-J jre bundle has no libjvm" >&2; find "$APP/Contents/Resources/libbluray/" || true; exit 1; }
+          echo "  + bdj bundle ok: j2se=$J2SE_CNT awt=$AWT_CNT fallback=present libjvm=present"
 
           codesign --force --deep --sign - "$APP"
           "./$APP/Contents/MacOS/mpv-bin" --version

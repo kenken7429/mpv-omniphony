@@ -60,21 +60,58 @@ fi
 # duration. We leave this symlink in place — CI containers are ephemeral.
 if [ "${BDJ_JAR}" = "enabled" ] && [ -n "${JAVA_HOME:-}" ]; then
     PLAT_DIR="$JAVA_HOME/include/win32"
-    if [ ! -d "$PLAT_DIR" ]; then
-        if [ -d "$JAVA_HOME/include/linux" ]; then
-            ln -s "$JAVA_HOME/include/linux" "$PLAT_DIR" 2>/dev/null \
-              || mkdir -p "$PLAT_DIR" && cp "$JAVA_HOME/include/linux/jni_md.h" "$PLAT_DIR/"
-            echo "  + bdj workaround: JDK include/win32 -> include/linux (MinGW cross)"
-        else
-            # try darwin (unlikely but harmless)
-            if [ -d "$JAVA_HOME/include/darwin" ]; then
-                ln -s "$JAVA_HOME/include/darwin" "$PLAT_DIR" 2>/dev/null \
-                  || mkdir -p "$PLAT_DIR" && cp "$JAVA_HOME/include/darwin/jni_md.h" "$PLAT_DIR/"
+    SRC_H=""
+    if   [ -f "$JAVA_HOME/include/linux/jni_md.h"  ]; then SRC_H="$JAVA_HOME/include/linux/jni_md.h"
+    elif [ -f "$JAVA_HOME/include/darwin/jni_md.h" ]; then SRC_H="$JAVA_HOME/include/darwin/jni_md.h"
+    fi
+    if [ -z "$SRC_H" ]; then
+        echo "!! cannot find platform-specific jni_md.h under $JAVA_HOME/include/" >&2
+        ls "$JAVA_HOME/include/" || true
+        exit 1
+    fi
+    # Early exit: include/win32/jni_md.h already usable.
+    # In JDK 26+ (Arch openjdk) include/win32 is often a symlink to include/linux.
+    # We treat the workaround as unnecessary whenever the destination file
+    # already exists AND resolves to the same inode as $SRC_H (via readlink -f
+    # and inode comparison) — this prevents "cp: src and dest are the same
+    # file" errors that otherwise happen on newer JDK layouts.
+    if [ -f "$PLAT_DIR/jni_md.h" ]; then
+        SAME_INODE=0
+        if command -v readlink >/dev/null 2>&1 && command -v stat >/dev/null 2>&1; then
+            A="$(readlink -f "$SRC_H"      2>/dev/null || echo "$SRC_H")"
+            B="$(readlink -f "$PLAT_DIR/jni_md.h" 2>/dev/null || echo "$PLAT_DIR/jni_md.h")"
+            if [ -n "$A" ] && [ "$A" = "$B" ]; then
+                SAME_INODE=1
             else
-                echo "!! cannot find platform-specific jni_md.h under $JAVA_HOME/include/" >&2
-                ls "$JAVA_HOME/include/" || true
-                exit 1
+                INO_A="$(stat -c '%i' "$A" 2>/dev/null || stat -f '%i' "$A" 2>/dev/null || echo 0)"
+                INO_B="$(stat -c '%i' "$B" 2>/dev/null || stat -f '%i' "$B" 2>/dev/null || echo 0)"
+                if [ "$INO_A" != "0" ] && [ "$INO_A" = "$INO_B" ]; then SAME_INODE=1; fi
             fi
+        fi
+        if [ "$SAME_INODE" -eq 1 ]; then
+            echo "  + bdj: JDK include/win32/jni_md.h already present (symlink -> src, no workaround needed)"
+        else
+            echo "  + bdj: JDK include/win32/jni_md.h already present (different content from linux/darwin; left untouched)"
+        fi
+    elif [ ! -d "$PLAT_DIR" ]; then
+        # Workaround case A: directory $PLAT_DIR does not exist at all.
+        # Prefer symlink (cheap & clean); fall back to plain copy when the
+        # filesystem doesn't support symlinks (rare on Linux CI containers).
+        SRC_SUBDIR="$(dirname "$SRC_H")"
+        if ! ln -s "$SRC_SUBDIR" "$PLAT_DIR" 2>/dev/null; then
+            mkdir -p "$PLAT_DIR"
+            cp "$SRC_H" "$PLAT_DIR/"
+        fi
+        echo "  + bdj workaround: JDK include/win32 -> $(basename "$SRC_SUBDIR") (MinGW cross)"
+    else
+        # Workaround case B: directory exists but jni_md.h is missing.
+        # Only copy when src != dest (defense in depth — already excluded
+        # above but belt-and-braces against any unusual layout).
+        if [ "$(readlink -f "$SRC_H" 2>/dev/null)" != "$(readlink -f "$PLAT_DIR/jni_md.h" 2>/dev/null)" ]; then
+            cp "$SRC_H" "$PLAT_DIR/"
+            echo "  + bdj workaround: copied jni_md.h into include/win32 (dir existed)"
+        else
+            echo "  + bdj: JDK include/win32/jni_md.h already present (case B, skip copy)"
         fi
     fi
 fi
@@ -118,20 +155,39 @@ meson compile -C _b
 meson install -C _b
 
 # --- jar relocation ---------------------------------------------------------
-# See build-libbluray-bdj.sh: meson drops the jar in $SYS/share/java/ as
-# libbluray-j2se-<VERSION>.jar but the runtime loader probes share/libbluray/
-# libbluray.jar. Reproduce the same copy/symlink here.
+# See build-libbluray-bdj.sh for the full story. Short version: meson drops
+# TWO jars into $SYS/share/java/:
+#   libbluray-<TYPE>-<VERSION>.jar       (main; patched into java.base)
+#   libbluray-awt-<TYPE>-<VERSION>.jar   (awt-only; patched into java.desktop)
+# The AWT jar is required because libbluray's _find_libbluray_jar1() rebuilds
+# its name by slicing the versioned j2se jar name; if it returns NULL the
+# main jar is also freed and the disc reports "libbluray.jar: 0" despite
+# LIBBLURAY_CP being set correctly.
+BDJ_TYPE="${BDJ_TYPE:-j2se}"
 if [ "${BDJ_JAR}" = "enabled" ]; then
   SHARE_JAVA="$SYS/share/java"
   BDJ_DIR="$SYS/share/libbluray"
-  SRC="$(ls "$SHARE_JAVA"/libbluray-j2se-*.jar 2>/dev/null | head -1 || true)"
-  if [ -n "$SRC" ]; then
+  SRC_J2SE="$(ls "$SHARE_JAVA"/libbluray-"${BDJ_TYPE}"-*.jar 2>/dev/null | head -1 || true)"
+  SRC_AWT="$(ls "$SHARE_JAVA"/libbluray-awt-"${BDJ_TYPE}"-*.jar 2>/dev/null | head -1 || true)"
+  if [ -n "$SRC_J2SE" ]; then
     mkdir -p "$BDJ_DIR"
-    cp "$SRC" "$BDJ_DIR/libbluray.jar"
-    ln -sf "$(basename "$SRC")" "$SHARE_JAVA/libbluray.jar" 2>/dev/null || true
-    echo "  + placed $BDJ_DIR/libbluray.jar (from $(basename "$SRC"), $(du -h "$BDJ_DIR/libbluray.jar" | cut -f1))"
+    J2SE_BASE="$(basename "$SRC_J2SE")"
+    cp -p "$SRC_J2SE" "$BDJ_DIR/$J2SE_BASE"
+    if [ -n "$SRC_AWT" ]; then
+      AWT_BASE="$(basename "$SRC_AWT")"
+      cp -p "$SRC_AWT" "$BDJ_DIR/$AWT_BASE"
+    else
+      echo "!! meson install produced no libbluray-awt-${BDJ_TYPE}-*.jar under $SHARE_JAVA" >&2
+      ls -la "$SHARE_JAVA" || true
+      exit 1
+    fi
+    cp -p "$SRC_J2SE" "$BDJ_DIR/libbluray.jar"
+    ln -sf "$J2SE_BASE" "$SHARE_JAVA/libbluray.jar" 2>/dev/null || true
+    echo "  + placed ${J2SE_BASE} + ${AWT_BASE} under $BDJ_DIR (libbluray.jar as unversioned fallback)"
+    echo "      j2se : $(du -h "$BDJ_DIR/$J2SE_BASE" | cut -f1)"
+    echo "      awt  : $(du -h "$BDJ_DIR/$AWT_BASE" | cut -f1)"
   else
-    echo "!! meson install produced no libbluray-j2se-*.jar under $SHARE_JAVA" >&2
+    echo "!! meson install produced no libbluray-${BDJ_TYPE}-*.jar under $SHARE_JAVA" >&2
     ls -la "$SHARE_JAVA" || true
     exit 1
   fi
@@ -145,14 +201,32 @@ test -n "$dll" || { echo "!! libbluray DLL not installed into $SYS/bin" >&2; exi
 "${HOST}-pkg-config" --exists libbluray \
   || { echo "!! libbluray.pc not visible to the MinGW pkg-config" >&2; exit 1; }
 
-# libbluray.jar verification when BDJ was enabled
+# libbluray.jar verification when BDJ was enabled: check BOTH versioned j2se
+# and awt jars exist alongside the unversioned libbluray.jar fallback. See
+# long comment in build-libbluray-bdj.sh jar relocation block for why both
+# versioned names matter.
 if [ "${BDJ_JAR}" = "enabled" ]; then
-    jar="$SYS/share/libbluray/libbluray.jar"
-    if [ -f "$jar" ]; then
-        echo "OK: libbluray.jar ($(du -h "$jar" | cut -f1))"
+    jar_j2se="$(ls "$SYS/share/libbluray/libbluray-${BDJ_TYPE}"-*.jar 2>/dev/null | grep -v awt | head -1 || true)"
+    jar_awt="$(ls  "$SYS/share/libbluray/libbluray-awt-${BDJ_TYPE}"-*.jar 2>/dev/null | head -1 || true)"
+    jar_fb="$SYS/share/libbluray/libbluray.jar"
+    ok=1
+    if [ -z "$jar_j2se" ] || [ ! -f "$jar_j2se" ]; then
+      echo "!! versioned j2se jar missing under $SYS/share/libbluray/" >&2; ok=0
+    fi
+    if [ -z "$jar_awt" ] || [ ! -f "$jar_awt" ]; then
+      echo "!! versioned awt jar missing under $SYS/share/libbluray/"  >&2; ok=0
+    fi
+    if [ ! -f "$jar_fb" ]; then
+      echo "!! unversioned libbluray.jar fallback missing at $jar_fb" >&2; ok=0
+    fi
+    if [ "$ok" = "1" ]; then
+      echo "OK: BDJ jars (via share/libbluray/):"
+      echo "  j2se : $jar_j2se  ($(du -h "$jar_j2se" | cut -f1))"
+      echo "  awt  : $jar_awt   ($(du -h "$jar_awt" | cut -f1))"
+      echo "  fb   : $jar_fb   ($(du -h "$jar_fb" | cut -f1))"
     else
-        echo "!! libbluray.jar not found at $jar (meson install?)" >&2
-        exit 1
+      echo "   contents of $SYS/share/libbluray/:" >&2; ls -la "$SYS/share/libbluray/" || true
+      exit 1
     fi
 fi
 
