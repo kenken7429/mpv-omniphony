@@ -28,6 +28,11 @@ on:
       - 'patches-master/**'
       - 'deps-fel/**'
       - 'scripts/build-fel-deps.sh'
+      - 'scripts/build-libbluray-bdj.sh'
+      - 'scripts/build-libbluray-mingw.sh'
+      - 'scripts/mpv-bdj-launcher-macos.sh'
+      - 'scripts/MPV-BD菜单启动.bat'
+      - 'scripts/BD_J_运行说明.txt'
       - 'scripts/apply-patches-master.sh'
       - '.github/workflows/build-master-beta.yml'
 
@@ -557,37 +562,14 @@ jobs:
           "$PB" -c "Add :CFBundleDisplayName string mpv-omniphony" "$APP/Contents/Info.plist" 2>/dev/null || true
 
           # --- BD-J launcher wrapper -----------------------------------------
-          # Replace the mpv executable with a bash shim that exports the env
-          # vars libbluray probes for (BLURAY_JVM_LIB_PATH, BLURAY_CLASSPATH)
-          # so double-clicking the app or running it from Spotlight gets BD-J
-          # menus without manual configuration. The shim is POSIX sh compatible
-          # and uses dirname "$0" so Finder's working-dir doesn't matter.
+          # Replace the mpv executable with a POSIX sh shim (checked into
+          # scripts/mpv-bdj-launcher-macos.sh) that sets BLURAY_JVM_LIB_PATH /
+          # BLURAY_CLASSPATH / JAVA_HOME before exec'ing the real binary.
+          # The shim does NOT depend on working dir — uses dirname "$0".
           BIN="$APP/Contents/MacOS"
           if [ -f "$BIN/mpv" ] && [ ! -L "$BIN/mpv" ]; then
             mv "$BIN/mpv" "$BIN/mpv-bin"
-            cat > "$BIN/mpv" <<'SHIM'
-#!/bin/bash
-# Wrapper shim for mpv-omniphony — sets BD-J env vars then execs the real binary.
-HERE="$(cd "$(dirname "$0")" && pwd)"
-RES="$HERE/../Resources/libbluray"
-# libbluray dlopen's libjvm directly via BLURAY_JVM_LIB_PATH (overrides all
-# other probes — most reliable).
-if [ -f "$RES/jre/lib/server/libjvm.dylib" ]; then
-  export BLURAY_JVM_LIB_PATH="$RES/jre/lib/server/libjvm.dylib"
-elif [ -f "$RES/jre/lib/jli/libjli.dylib" ]; then
-  # Some jlink layouts on macOS use lib/jli/libjli.dylib as entry
-  export BLURAY_JVM_LIB_PATH="$RES/jre/lib/jli/libjli.dylib"
-fi
-# BLURAY_CLASSPATH lets users point at libbluray.jar; also set JAVA_HOME as a
-# fallback for older libbluray branches that only inspect JAVA_HOME/lib.
-if [ -f "$RES/libbluray.jar" ]; then
-  export BLURAY_CLASSPATH="$RES/libbluray.jar"
-  if [ -d "$RES/jre" ] && [ ! "${JAVA_HOME:-}" ]; then
-    export JAVA_HOME="$RES/jre"
-  fi
-fi
-exec "$HERE/mpv-bin" "$@"
-SHIM
+            cp "${GITHUB_WORKSPACE}/scripts/mpv-bdj-launcher-macos.sh" "$BIN/mpv"
             chmod +x "$BIN/mpv"
             echo "  + BD-J launcher shim installed (wrapper mpv -> mpv-bin)"
           fi
@@ -910,37 +892,11 @@ SHIM
             echo "!! libbluray.jar missing (BD-J not built); aborting per user spec." >&2
             exit 1
           fi
-          cat > staging/MPV-BD菜单启动.bat <<'WIN_BAT'
-@echo off
-REM Launch mpv with Blu-ray BD-J interactive menu support.
-REM Requires JRE 17+ installed (https://adoptium.net/).
-setlocal
-  set HERE=%~dp0
-  if exist "%HERE%share\libbluray\libbluray.jar" set BLURAY_CLASSPATH=%HERE%share\libbluray\libbluray.jar
-  if not "%JAVA_HOME%"=="" set BLURAY_JVM_LIB_PATH=%JAVA_HOME%\bin\server\jvm.dll
-  "%HERE%mpv.exe" --disc-menu=yes --bluray-device=%*
-endlocal
-WIN_BAT
-          cat > staging/BD_J_运行说明.txt <<'WIN_TXT'
-Blu-ray BD-J 菜单说明
-====================
-本压缩包已包含 libbluray.jar（BD-J Java 菜单编译产物），
-放在 share/libbluray/libbluray.jar。
-
-想要进入蓝光菜单，还需要 Windows 机器已安装 JRE 17+
-（推荐 Adoptium Temurin：https://adoptium.net/，JRE 约 55MB，
-libbluray 通过 JAVA_HOME 查找 bin\server\jvm.dll）。
-
-命令行使用：
-  MPV-BD菜单启动.bat  "D:\蓝光\我的碟.iso"
-或直接：
-  set BLURAY_CLASSPATH=<解压目录>\share\libbluray\libbluray.jar
-  set BLURAY_JVM_LIB_PATH=C:\Program Files\Eclipse Adoptium\jre-21\bin\server\jvm.dll
-  mpv.exe --disc-menu=yes --bluray-device="D:\蓝光\我的碟.iso" bd://
-
-Disney/UHD 碟大多使用 BD-J 菜单；如不启用 --disc-menu，
-mpv 会直接播放主片而跳过菜单。
-WIN_TXT
+          # BD-J launcher + readme are checked into scripts/ to avoid the
+          # YAML "literal scalar with bare heredoc delimiters at column 0" pit.
+          cp "${GITHUB_WORKSPACE}/scripts/MPV-BD菜单启动.bat"   staging/MPV-BD菜单启动.bat
+          cp "${GITHUB_WORKSPACE}/scripts/BD_J_运行说明.txt"     staging/BD_J_运行说明.txt
+          echo "  + MPV-BD菜单启动.bat launcher + BD_J_运行说明.txt"
           should_skip() {
             case "$1" in
               KERNEL32.*|USER32.*|GDI32.*|ADVAPI32.*|MSVCRT.*|SHELL32.*|ole32.*|OLEAUT32.*|WS2_32.*|IMM32.*|VERSION.*|WINMM.*|d3d*|dxgi*|opengl32.*|setupapi.*|RPCRT4.*|bcrypt.*|CRYPT32.*|comdlg32.*|netapi32.*|powrprof.*|psapi.*|userenv.*|wininet.*|wintrust.*|comctl32.*|iphlpapi.*|secur32.*|uxtheme.*|dwmapi.*|crypt32.*|ncrypt.*|dnsapi.*|mpr.*|mswsock.*|odbc32.*|odbccp32.*|VCRUNTIME*|api-ms-*)

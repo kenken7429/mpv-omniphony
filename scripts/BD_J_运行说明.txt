@@ -1,0 +1,44 @@
+Blu-ray BD-J 菜单运行说明（Windows）
+=====================================
+
+1. 本压缩包已包含 libbluray.jar —— BD-J（蓝光 Java 菜单）的编译产物，
+   放在 share\libbluray\libbluray.jar。mpv 执行 --disc-menu=yes 时，
+   libbluray 会加载这个 jar 并启动 Java 虚拟机，然后渲染碟片自带的
+   交互式菜单（Disney/UHD 碟几乎都用 BD-J 菜单；如果禁用会直接进入
+   主片播放）。
+
+2. 仍然需要你在 Windows 上安装 JRE 17+（JVM 运行时）才能真正进入
+   菜单。本压缩包不附带 jvm.dll（一个完整的 JRE 约 80 MB，且 Eclipse
+   Adoptium 官方发行许可要求最终用户自行接受许可协议后安装）。
+
+   推荐 JRE：Adoptium Temurin（开源、免费、签名完整）
+   下载地址：https://adoptium.net/zh-CN/temurin/releases/?version=21
+   选择：Operating System = Windows，Architecture = x64，
+         Package Type = JRE（不是 JDK，省空间）。
+   安装过程中勾选 "设置 JAVA_HOME 变量"，完成后新开一个 cmd 执行
+     echo %JAVA_HOME%
+   能看到实际路径即为成功。
+
+3. 启动方式
+   --------
+   A. 最简单：双击 MPV-BD菜单启动.bat，然后把 ISO/BDMV 目录拖到窗口上；
+      或者在命令行里直接传路径：
+          MPV-BD菜单启动.bat  "D:\蓝光\壮志凌云2.iso"
+
+   B. 直接用 mpv.exe：
+          set BLURAY_CLASSPATH=<解压目录>\share\libbluray\libbluray.jar
+          set BLURAY_JVM_LIB_PATH=%JAVA_HOME%\bin\server\jvm.dll
+          mpv.exe --disc-menu=yes --bluray-device="D:\蓝光\碟.iso"  bd://
+
+4. 常见问题
+   --------
+   • 看到 "BD-J menus not supported. Java VM: 0, libbluray.jar: 0"：
+       – libbluray.jar=0：jar 没放到 share\libbluray\ 下 —— 确认解压后
+         目录结构里存在 share\libbluray\libbluray.jar。
+       – Java VM=0：JVM 没被加载 —— 确认 %JAVA_HOME% 存在且指向的目录
+         下有 bin\server\jvm.dll（第 2 步的 JRE 安装 + 勾选 JAVA_HOME）。
+   • 菜单出来但全英文：是碟片自带的原始 BD-J 菜单，我们只解决 "能加载"；
+     "菜单中文化" 需要对原碟做 BDJ 修改，属于原盘制作层面的问题。
+   • 能播主片、但菜单按钮点击无响应或黑屏：BD-J Xlet 需要 Oracle/Adoptium
+     的 JDK 兼容字节码（j2se 模式），请确认 JRE 不是只支持 j2me 的老版本。
+     我们构建 libbluray 时使用的是 -Dbdj_type=j2se（标准 JVM）。
