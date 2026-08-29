@@ -5,14 +5,14 @@ Subject: [PATCH] feat(stream/bluray): start BD-J playback on IDLE(1) via
  bd_select_rate
 
 ---
- stream/stream_bluray.c | 6 ++++++
- 1 file changed, 6 insertions(+)
+ stream/stream_bluray.c | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
 
 diff --git a/stream/stream_bluray.c b/stream/stream_bluray.c
 index 04b2520..8583f2d 100644
 --- a/stream/stream_bluray.c
 +++ b/stream/stream_bluray.c
-@@ -552,6 +552,12 @@ static int bluray_stream_fill_buffer(stream_t *s, void *buf, int len)
+@@ -552,6 +552,18 @@ static int bluray_stream_fill_buffer(stream_t *s, void *buf, int len)
              break;
          case BD_EVENT_IDLE:
              bdj_idle = true;
@@ -20,8 +20,14 @@ index 04b2520..8583f2d 100644
 +            // returns IDLE(1)+0 bytes until bd_select_rate() starts it.
 +            // Without this, the demuxer sees EOF after a menu item is
 +            // clicked and mpv exits. Reason 1 = BDJ_PLAYBACK_START.
-+            if (ev.param == 1)
++            if (ev.param == 1) {
 +                bd_select_rate(b->bd, 1.0f, 1);
++                // bd_play_playlist_at() rewound the stream to the playlist
++                // start; drop position tracking so the next read is not
++                // misdetected as a "position warped" jump (which would
++                // force a pointless slave-demuxer reopen and replay).
++                b->read_pos_known = false;
++            }
              break;
          case BD_EVENT_STILL:
              mp_mutex_lock(&b->overlay_lock);
