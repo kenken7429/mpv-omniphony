@@ -735,8 +735,13 @@ jobs:
             mingw-w64-shaderc mingw-w64-spirv-cross mingw-w64-lcms2 mingw-w64-zlib \
             mingw-w64-libdvdnav mingw-w64-libdvdread \
             mingw-w64-opus \
-            jdk-openjdk
-          # ^ DVD playback (folder + ISO) from Martchus; libdvdnav -> libdvdread
+            jdk-openjdk \
+            ant
+          # ^ ant is REQUIRED by libbluray's meson bdj_jar=enabled: its
+          # src/libbluray/bdj/meson.build does find_program('ant') and dies
+          # with "ERROR: Program 'ant' not found" when absent. jdk-openjdk
+          # alone is not enough — the ant build step compiles the BD-J jars.
+          # DVD playback (folder + ISO) from Martchus; libdvdnav -> libdvdread
           # read images natively. libbluray is built from source with embedded
           # libudfread + BD-J (jar) below. jdk-openjdk = HOST javac for the jar.
           # We build our OWN libplacebo (master) + ffmpeg (master) into the

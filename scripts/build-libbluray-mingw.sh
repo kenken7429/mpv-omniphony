@@ -150,6 +150,59 @@ meson_args=(
 if [ "${BDJ_JAR}" = "enabled" ] && [ -n "${JAVA_HOME:-}" ]; then
     meson_args+=(-Djdk_home="${JAVA_HOME}")
 fi
+
+# --- VFSCache patch: auto-cache BDMV/JAR/ subdirectories -------------------
+# Same fix as build-libbluray-bdj.sh: some DIY BD-J discs (SGNB/Athena/nn
+# release groups) store menu resources in subdirectories under BDMV/JAR/
+# (e.g. 03001/projectsettings.xml) without declaring them as DIRECTORY
+# entries in the BDJO AppCache list. VFSCache.add() only caches what
+# AppCache declares, so the MenuXlet gets FileNotFoundException -> NPE.
+# Patch add() to also scan and cache any subdirectories found under
+# BDMV/JAR/.
+VFS_FILE="src/libbluray/bdj/java/org/videolan/VFSCache.java"
+if grep -q 'auto-cached JAR subdirectory' "$VFS_FILE" 2>/dev/null; then
+    echo ">> VFSCache patch already applied"
+else
+    python3 - "$VFS_FILE" <<'PATCHVFSCACHE'
+import sys
+f = sys.argv[1]
+code = open(f).read()
+old = """        }
+        }
+    }
+
+    protected File addFont"""
+new = """        }
+        // Auto-cache BDMV/JAR/ subdirectories not declared in AppCache.
+        // Some DIY BD-J discs store menu resources in subdirectories
+        // (e.g. 03001/projectsettings.xml) without declaring them as
+        // DIRECTORY entries in the BDJO, causing NPE in MenuXlet.
+        String[] jarEntries = Libbluray.listBdFiles(jarDir, true);
+        if (jarEntries != null) {
+            for (int j = 0; j < jarEntries.length; j++) {
+                String entry = jarEntries[j];
+                String entryPath = jarDir + entry;
+                String[] subFiles = Libbluray.listBdFiles(entryPath, true);
+                if (subFiles != null) {
+                    copyJarDir(entry);
+                    logger.info("auto-cached JAR subdirectory: " + entry);
+                }
+            }
+        }
+        }
+    }
+
+    protected File addFont"""
+if old not in code:
+    print("ERROR: could not find add() method pattern in VFSCache.java")
+    sys.exit(1)
+code = code.replace(old, new, 1)
+open(f, 'w').write(code)
+print("VFSCache patched: auto-cache BDMV/JAR/ subdirectories")
+PATCHVFSCACHE
+    echo ">> VFSCache patched: auto-cache BDMV/JAR/ subdirectories"
+fi
+
 meson setup _b "${meson_args[@]}"
 meson compile -C _b
 meson install -C _b
