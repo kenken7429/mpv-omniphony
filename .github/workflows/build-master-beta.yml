@@ -1017,12 +1017,12 @@ jobs:
       - name: Publish master beta pre-release
         uses: softprops/action-gh-release@v3
         with:
-          # Publish to the engine repo (the download hub), like release.yml. The
-          # 'mpv-' tag prefix matches neither Omniphony's v* (Studio) nor
-          # liborender-v* triggers, so it starts no build there. Needs the
-          # OMNIPHONY_RELEASE_TOKEN secret (contents:write on mgth/Omniphony).
-          repository: mgth/Omniphony
-          token: ${{ secrets.OMNIPHONY_RELEASE_TOKEN }}
+          # Publish to THIS fork (kenken7429/mpv-omniphony) with the
+          # auto-generated GITHUB_TOKEN (contents:write granted above).
+          # To publish to the upstream download hub instead, set the
+          # OMNIPHONY_RELEASE_TOKEN secret (contents:write on mgth/Omniphony)
+          # and restore `repository: mgth/Omniphony`.
+          token: ${{ secrets.GITHUB_TOKEN }}
           tag_name: mpv-${{ github.ref_name }}
           name: 'mpv-omniphony ${{ github.ref_name }} — master (spatial audio + enhanced video-range)'
           prerelease: true
