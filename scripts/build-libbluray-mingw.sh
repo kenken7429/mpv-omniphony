@@ -228,15 +228,16 @@ decl = anchor + """
  *  reason BDJ_PLAYBACK_START (rate 1.0 = normal speed). Until then,
  *  bd_read_ext() returns BD_EVENT_IDLE(1) and 0 bytes.
  *
+ *  NOTE: reason constants are NOT exposed here (bluray_internal.h already
+ *  defines BDJ_PLAYBACK_START=1 / BDJ_PLAYBACK_STOP=2 in an enum; defining
+ *  macros with the same names here would break bluray.c which includes both
+ *  headers). Callers outside libbluray pass the literal values.
+ *
  * @param bd     BLURAY object
  * @param rate   playback rate (1.0 = normal speed)
- * @param reason BDJ_PLAYBACK_START (=1) to start, BDJ_PLAYBACK_STOP (=2) to stop
+ * @param reason 1 = BDJ_PLAYBACK_START (start prefetched playlist), 2 = stop
  */
-BD_PUBLIC void bd_select_rate(BLURAY *bd, float rate, int reason);
-
-/* bd_select_rate() reason values (see above) */
-#define BDJ_PLAYBACK_START 1
-#define BDJ_PLAYBACK_STOP  2"""
+BD_PUBLIC void bd_select_rate(BLURAY *bd, float rate, int reason);"""
 if anchor not in h:
     print("ERROR: could not find bd_play_title() declaration in bluray.h")
     sys.exit(1)
