@@ -140,6 +140,65 @@ PATCHVFSCACHE
     log "VFSCache patched: auto-cache BDMV/JAR/ subdirectories"
 fi
 
+# --- bd_select_rate export patch -------------------------------------------
+# When a BD-J Xlet prefetches a playlist (bd_play_playlist_at), libbluray sets
+# bdj_wait_start=1 and bd_read_ext() returns BD_EVENT_IDLE(1) + 0 bytes until
+# the host calls bd_select_rate(bd, 1.0, BDJ_PLAYBACK_START). mpv needs this
+# to start BD-J playback after a menu item is clicked — without it, mpv sees
+# EOF and exits. libbluray builds with gnu_symbol_visibility='hidden', so
+# bd_select_rate (declared BD_PRIVATE in bluray_internal.h) is NOT exported
+# from the shared library. Promote it to a public API: declare it in bluray.h
+# with BD_PUBLIC and annotate the definition so the symbol is visible to mpv.
+BLURAY_H="src/libbluray/bluray.h"
+BLURAY_C="src/libbluray/bluray.c"
+if grep -q 'bd_select_rate(BLURAY \*bd, float rate, int reason)' "$BLURAY_H" 2>/dev/null; then
+    log "bd_select_rate export patch already applied"
+else
+    python3 - "$BLURAY_H" "$BLURAY_C" <<'PATCHSELECTRATE'
+import sys
+h_path, c_path = sys.argv[1:3]
+
+h = open(h_path).read()
+anchor = "BD_PUBLIC int  bd_play_title(BLURAY *bd, unsigned title);"
+decl = anchor + """
+
+/**
+ *
+ *  BD-J: start / stop playback rate.
+ *
+ *  When a BD-J Xlet prefetches a playlist via bd_play_playlist_at(), playback
+ *  does not actually start until the application calls bd_select_rate() with
+ *  reason BDJ_PLAYBACK_START (rate 1.0 = normal speed). Until then,
+ *  bd_read_ext() returns BD_EVENT_IDLE(1) and 0 bytes.
+ *
+ * @param bd     BLURAY object
+ * @param rate   playback rate (1.0 = normal speed)
+ * @param reason BDJ_PLAYBACK_START (=1) to start, BDJ_PLAYBACK_STOP (=2) to stop
+ */
+BD_PUBLIC void bd_select_rate(BLURAY *bd, float rate, int reason);
+
+/* bd_select_rate() reason values (see above) */
+#define BDJ_PLAYBACK_START 1
+#define BDJ_PLAYBACK_STOP  2"""
+if anchor not in h:
+    print("ERROR: could not find bd_play_title() declaration in bluray.h")
+    sys.exit(1)
+h = h.replace(anchor, decl, 1)
+open(h_path, 'w').write(h)
+
+c = open(c_path).read()
+old = "void bd_select_rate(BLURAY *bd, float rate, int reason)"
+new = "BD_PUBLIC void bd_select_rate(BLURAY *bd, float rate, int reason)"
+if old not in c:
+    print("ERROR: could not find bd_select_rate() definition in bluray.c")
+    sys.exit(1)
+c = c.replace(old, new, 1)
+open(c_path, 'w').write(c)
+print("bd_select_rate exported: bluray.h declaration + bluray.c BD_PUBLIC")
+PATCHSELECTRATE
+    log "bd_select_rate exported (bluray.h + bluray.c)"
+fi
+
 rm -rf _b
 meson setup _b "${meson_args[@]}"
 ninja -C _b -j"$JOBS"
