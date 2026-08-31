@@ -466,19 +466,16 @@ jobs:
       # Reset the rolling release + tag so assets are replaced, not accumulated.
       - name: Delete previous integration release + tag (if any)
         env:
-          GH_TOKEN: ${{ secrets.OMNIPHONY_RELEASE_TOKEN }}
-        run: gh release delete mpv-integration --repo mgth/Omniphony --cleanup-tag --yes || true
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release delete mpv-integration --repo ${{ github.repository }} --cleanup-tag --yes || true
 
       - name: Publish rolling integration pre-release
         uses: softprops/action-gh-release@v3
         with:
-          # Publish to the engine repo (the download hub), like release.yml and
-          # build-master-beta.yml. The 'mpv-' tag prefix matches neither
-          # Omniphony's v* (Studio) nor liborender-v* triggers, so it starts no
-          # build there. Needs the OMNIPHONY_RELEASE_TOKEN secret
-          # (contents:write on mgth/Omniphony).
-          repository: mgth/Omniphony
-          token: ${{ secrets.OMNIPHONY_RELEASE_TOKEN }}
+          # Publish to THIS fork's Releases page with the auto-generated GITHUB_TOKEN.
+          # To publish to the upstream download hub (mgth/Omniphony) instead, set the
+          # OMNIPHONY_RELEASE_TOKEN secret and restore `repository: mgth/Omniphony`.
+          token: ${{ secrets.GITHUB_TOKEN }}
           tag_name: mpv-integration
           name: 'mpv-omniphony (integration build)'
           prerelease: true
