@@ -1,0 +1,109 @@
+diff --git a/demux/demux_disc.c b/demux/demux_disc.c
+index 2d07ccbd01..067ea094ef 100644
+--- a/demux/demux_disc.c
++++ b/demux/demux_disc.c
+@@ -440,6 +440,51 @@ static void sync_streams(struct demuxer *demuxer)
+             outer_member->group = grp;
+         }
+     }
++    // libavformat does not produce a Dolby Vision BL/EL LayeredVideo group for a
++    // Blu-ray MPEG-TS: BL (0x1011) and EL (0x1015) surface as two plain, unrelated
++    // video streams, so the group-mirror above never fires. mpv's DV FEL pairing
++    // (sh_stream_dependent_sibling -> f_enhancement_pair) only engages through a
++    // 2-member stream group, so if the P7 base layer is still ungrouped, bind it
++    // here. The EL is classified by libbluray's authoritative dv_streams[] (the
++    // STN marks DV streams; PiP lives in sec_video_streams, so it is never
++    // mis-paired), not by PID or resolution ordering.
++    if (p->is_bd) {
++        struct stream_dv_info dvinfo = {0};
++        if (stream_control(demuxer->stream, STREAM_CTRL_GET_DV_INFO, &dvinfo) ==
++            STREAM_OK && dvinfo.num_el > 0)
++        {
++            struct sh_stream *bl = NULL, *el = NULL;
++            int non_el_video = 0;
++            for (int i = 0; i < p->num_outer_streams; i++) {
++                struct sh_stream *sh = p->outer_streams[i];
++                if (!sh || sh->type != STREAM_VIDEO)
++                    continue;
++                bool is_el = false;
++                for (int k = 0; k < dvinfo.num_el; k++)
++                    is_el |= sh->demuxer_id == dvinfo.el_pid[k];
++                if (is_el) {
++                    if (!el)
++                        el = sh;
++                } else {
++                    non_el_video++;
++                    bl = sh;
++                }
++            }
++            // Only proceed when there is exactly one EL and exactly one other
++            // video (the BL). Anything else is ambiguous; fail closed.
++            if (el && non_el_video == 1 && bl && bl != el && !bl->group) {
++                MP_VERBOSE(demuxer, "pairing BD DV BL id=0x%x with EL id=0x%x "
++                           "(libbluray dv_streams)\n",
++                           bl->demuxer_id, el->demuxer_id);
++                el->dependent_track = true;
++                struct sh_stream_group *grp = talloc_zero(bl, struct sh_stream_group);
++                bl->group = grp;
++                el->group = grp;
++                MP_TARRAY_APPEND(grp, grp->members, grp->num_members, bl);
++                MP_TARRAY_APPEND(grp, grp->members, grp->num_members, el);
++            }
++        }
++    }
+ }
+ 
+ static void refresh_disc_metadata(struct demuxer *demuxer);
+diff --git a/stream/stream.h b/stream/stream.h
+index 7e76729730..d27045e2e8 100644
+--- a/stream/stream.h
++++ b/stream/stream.h
+@@ -101,8 +101,14 @@ enum stream_ctrl {
+     STREAM_CTRL_SET_STILL_PAGE,      // int*, force the shown still page
+     STREAM_CTRL_NAV_DRAIN_ENABLE,    // start holding EOF at jump boundaries
+     STREAM_CTRL_NAV_DRAIN_ACK,       // flush done, release the held EOF
++    STREAM_CTRL_GET_DV_INFO,         // struct stream_dv_info*
+ };
+ 
++// Dolby Vision enhancement-layer (EL) info for the current program (BD).
++struct stream_dv_info {
++    int num_el;      // number of distinct DV EL PIDs found in the playlist
++    int el_pid[16];  // the EL mpeg-ts PIDs (libbluray dv_streams[])
++};
+ // Fetch the still image that a disc (DVD-Audio ASVS) associates with the given
+ // playback position, as an MPEG-2 video elementary stream.
+ struct stream_still_req {
+diff --git a/stream/stream_bluray.c b/stream/stream_bluray.c
+index f48890c91e..0498476003 100644
+--- a/stream/stream_bluray.c
++++ b/stream/stream_bluray.c
+@@ -837,6 +837,29 @@ static int bluray_stream_control(stream_t *s, int cmd, void *arg)
+         mp_mutex_unlock(&b->overlay_lock);
+         return ti ? STREAM_OK : STREAM_UNSUPPORTED;
+     }
++    case STREAM_CTRL_GET_DV_INFO: {
++        struct stream_dv_info *info = ((struct stream_dv_info *) arg);
++        info->num_el = 0;
++        mp_mutex_lock(&b->overlay_lock);
++        const BLURAY_TITLE_INFO *ti = b->title_info;
++        if (ti) {
++            for (unsigned c = 0; c < ti->clip_count; c++) {
++                const BLURAY_CLIP_INFO *clip = &ti->clips[c];
++                for (int i = 0; i < clip->dv_stream_count &&
++                     info->num_el < (int)(sizeof(info->el_pid) /
++                                          sizeof(info->el_pid[0])); i++) {
++                    int pid = clip->dv_streams[i].pid;
++                    bool seen = false;
++                    for (int k = 0; k < info->num_el; k++)
++                        seen |= info->el_pid[k] == pid;
++                    if (!seen)
++                        info->el_pid[info->num_el++] = pid;
++                }
++            }
++        }
++        mp_mutex_unlock(&b->overlay_lock);
++        return ti ? STREAM_OK : STREAM_UNSUPPORTED;
++    }
+     case STREAM_CTRL_GET_CURRENT_TIME: {
+         *((double *) arg) = BD_TIME_TO_S(bd_tell_time(b->bd));
+         return STREAM_OK;
