@@ -19,14 +19,14 @@
 # Env:
 #   PREFIX        install prefix (default: $PWD/fel-prefix)
 #   JAVA_HOME     path to JDK (REQUIRED unless a system java is discoverable)
-#   LIBBLURAY_VER libbluray release to build (default 1.4.1)
+#   LIBBLURAY_VER libbluray release to build (default 1.5.1)
 #   BDJ_JAR       enabled|auto|disabled (default: enabled — build the jar)
 #   BDJ_TYPE      j2se|j2me (default: j2se — Java SE profile)
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PREFIX="${PREFIX:-$PWD/fel-prefix}"
-LIBBLURAY_VER="${LIBBLURAY_VER:-1.4.1}"
+LIBBLURAY_VER="${LIBBLURAY_VER:-1.5.1}"
 BDJ_JAR="${BDJ_JAR:-enabled}"
 BDJ_TYPE="${BDJ_TYPE:-j2se}"
 JOBS="${JOBS:-$(uname -s | grep -q Darwin && sysctl -n hw.ncpu || nproc)}"
@@ -64,9 +64,17 @@ log "libbluray ${LIBBLURAY_VER} (bdj_jar=${BDJ_JAR} jdk_home=${JAVA_HOME:-<syste
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
+# libbluray 1.5.0+ releases are tagged in git only (no tarball on the
+# download server). Try the tarball first, fall back to git clone.
 url="https://download.videolan.org/pub/videolan/libbluray/${LIBBLURAY_VER}/libbluray-${LIBBLURAY_VER}.tar.xz"
-curl -fsSL -o "$work/libbluray.tar.xz" "$url"
-tar -C "$work" -xf "$work/libbluray.tar.xz"
+if curl -fsSL -o "$work/libbluray.tar.xz" "$url" 2>/dev/null; then
+    tar -C "$work" -xf "$work/libbluray.tar.xz"
+else
+    log "tarball not found at $url, cloning from git tag ${LIBBLURAY_VER}"
+    git clone --depth 1 --branch "${LIBBLURAY_VER}" \
+        https://code.videolan.org/videolan/libbluray.git \
+        "$work/libbluray-${LIBBLURAY_VER}"
+fi
 cd "$work/libbluray-${LIBBLURAY_VER}"
 
 meson_args=(
@@ -140,19 +148,19 @@ PATCHVFSCACHE
     log "VFSCache patched: auto-cache BDMV/JAR/ subdirectories"
 fi
 
-# --- bd_select_rate export patch -------------------------------------------
+# --- bdpriv_select_rate export patch -------------------------------------------
 # When a BD-J Xlet prefetches a playlist (bd_play_playlist_at), libbluray sets
 # bdj_wait_start=1 and bd_read_ext() returns BD_EVENT_IDLE(1) + 0 bytes until
-# the host calls bd_select_rate(bd, 1.0, BDJ_PLAYBACK_START). mpv needs this
+# the host calls bdpriv_select_rate(bd, 1.0, BDJ_PLAYBACK_START). mpv needs this
 # to start BD-J playback after a menu item is clicked — without it, mpv sees
 # EOF and exits. libbluray builds with gnu_symbol_visibility='hidden', so
-# bd_select_rate (declared BD_PRIVATE in bluray_internal.h) is NOT exported
+# bdpriv_select_rate (declared BD_PRIVATE in bluray_internal.h) is NOT exported
 # from the shared library. Promote it to a public API: declare it in bluray.h
 # with BD_PUBLIC and annotate the definition so the symbol is visible to mpv.
 BLURAY_H="src/libbluray/bluray.h"
 BLURAY_C="src/libbluray/bluray.c"
-if grep -q 'bd_select_rate(BLURAY \*bd, float rate, int reason)' "$BLURAY_H" 2>/dev/null; then
-    log "bd_select_rate export patch already applied"
+if grep -q 'bdpriv_select_rate(BLURAY \*bd, float rate, int reason)' "$BLURAY_H" 2>/dev/null; then
+    log "bdpriv_select_rate export patch already applied"
 else
     python3 - "$BLURAY_H" "$BLURAY_C" <<'PATCHSELECTRATE'
 import sys
@@ -167,7 +175,7 @@ decl = anchor + """
  *  BD-J: start / stop playback rate.
  *
  *  When a BD-J Xlet prefetches a playlist via bd_play_playlist_at(), playback
- *  does not actually start until the application calls bd_select_rate() with
+ *  does not actually start until the application calls bdpriv_select_rate() with
  *  reason BDJ_PLAYBACK_START (rate 1.0 = normal speed). Until then,
  *  bd_read_ext() returns BD_EVENT_IDLE(1) and 0 bytes.
  *
@@ -180,7 +188,7 @@ decl = anchor + """
  * @param rate   playback rate (1.0 = normal speed)
  * @param reason 1 = BDJ_PLAYBACK_START (start prefetched playlist), 2 = stop
  */
-BD_PUBLIC void bd_select_rate(BLURAY *bd, float rate, int reason);"""
+BD_PUBLIC void bdpriv_select_rate(BLURAY *bd, float rate, int reason);"""
 if anchor not in h:
     print("ERROR: could not find bd_play_title() declaration in bluray.h")
     sys.exit(1)
@@ -188,16 +196,45 @@ h = h.replace(anchor, decl, 1)
 open(h_path, 'w').write(h)
 
 c = open(c_path).read()
-old = "void bd_select_rate(BLURAY *bd, float rate, int reason)"
-new = "BD_PUBLIC void bd_select_rate(BLURAY *bd, float rate, int reason)"
+old = "void bdpriv_select_rate(BLURAY *bd, float rate, int reason)"
+new = "BD_PUBLIC void bdpriv_select_rate(BLURAY *bd, float rate, int reason)"
 if old not in c:
-    print("ERROR: could not find bd_select_rate() definition in bluray.c")
+    print("ERROR: could not find bdpriv_select_rate() definition in bluray.c")
     sys.exit(1)
 c = c.replace(old, new, 1)
 open(c_path, 'w').write(c)
-print("bd_select_rate exported: bluray.h declaration + bluray.c BD_PUBLIC")
+print("bdpriv_select_rate exported: bluray.h declaration + bluray.c BD_PUBLIC")
 PATCHSELECTRATE
-    log "bd_select_rate exported (bluray.h + bluray.c)"
+    log "bdpriv_select_rate exported (bluray.h + bluray.c)"
+fi
+
+# --- 0030: HDMV extended IG PID patch -------------------------------------------
+# Some reauthored/DIY discs place the IG stream PID above the conventional
+# 0x141f limit (e.g. 0x14a0). IS_HDMV_PID_IG() does a strict range check and
+# silently discards the interactive composition, so the menu shows background
+# but no buttons. Broaden the check to accept any PID in the IG namespace.
+GC_FILE="src/libbluray/decoders/graphics_controller.c"
+if grep -q 'reauthored discs place it above' "$GC_FILE" 2>/dev/null; then
+    log "0030 hdmv-extended-ig-pid patch already applied"
+else
+    python3 - "$GC_FILE" <<'PATCH0030'
+import sys
+f = sys.argv[1]
+code = open(f).read()
+old = "    if (IS_HDMV_PID_IG(pid)) {"
+new = """    /* The caller supplies the IG PID selected from the playlist STN. Some
+     * reauthored discs place it above the conventional 0x141f limit (e.g.
+     * 0x14a0). Keep the graphics namespace bounded, but accept that selected
+     * stream instead of silently discarding its interactive composition. */
+    if ((pid & 0xff00) == HDMV_PID_IG_FIRST) {"""
+if old not in code:
+    print("ERROR: could not find IS_HDMV_PID_IG(pid) in graphics_controller.c")
+    sys.exit(1)
+code = code.replace(old, new, 1)
+open(f, 'w').write(code)
+print("0030 patched: HDMV extended IG PID acceptance")
+PATCH0030
+    log "0030 patched: HDMV extended IG PID acceptance"
 fi
 
 rm -rf _b
@@ -206,7 +243,7 @@ ninja -C _b -j"$JOBS"
 ninja -C _b install
 
 # --- jar relocation ---------------------------------------------------------
-# libbluray 1.4.1 meson installs TWO BD-J jars to $PREFIX/share/java/:
+# libbluray 1.5.1 meson installs TWO BD-J jars to $PREFIX/share/java/:
 #   libbluray-<TYPE>-<VERSION>.jar    (main jar: classes for --patch-module java.base)
 #   libbluray-awt-<TYPE>-<VERSION>.jar (awt jar: java.awt/sun/* classes only for java.desktop patch)
 #

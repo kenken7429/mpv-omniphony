@@ -2,7 +2,7 @@ From f206ed5cec83d167e30ba86aa2c96edeca68f9da Mon Sep 17 00:00:00 2001
 From: Yiqiang Zheng <kenken7429@users.noreply.github.com>
 Date: Sat, 29 Aug 2026 10:47:24 +0800
 Subject: [PATCH] feat(stream/bluray): start BD-J playback on IDLE(1) via
- bd_select_rate
+ bdpriv_select_rate
 
 ---
  stream/stream_bluray.c | 29 +++++++++++++++++++++++++++++ 8 --------
@@ -49,11 +49,11 @@ index 04b2520..8583f2d 100644
          case BD_EVENT_IDLE:
              bdj_idle = true;
 +            // BD-J prefetched a playlist (bdj_wait_start=1): bd_read_ext()
-+            // returns IDLE(1)+0 bytes until bd_select_rate() starts it.
++            // returns IDLE(1)+0 bytes until bdpriv_select_rate() starts it.
 +            // Without this, the demuxer sees EOF after a menu item is
 +            // clicked and mpv exits. Reason 1 = BDJ_PLAYBACK_START.
 +            if (ev.param == 1) {
-+                bd_select_rate(b->bd, 1.0f, 1);
++                bdpriv_select_rate(b->bd, 1.0f, 1);
 +                // bd_play_playlist_at() rewound the stream to the playlist
 +                // start; drop position tracking so the next read is not
 +                // misdetected as a "position warped" jump (which would

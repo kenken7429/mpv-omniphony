@@ -9,7 +9,7 @@
 #   BLURAY_JVM_LIB_PATH   absolute path to libjvm.dylib (strongest override,
 #                         bypasses dlopen heuristics)
 #   LIBBLURAY_CP          absolute path to the VERSIONED j2se jar (e.g.
-#                         libbluray-j2se-1.4.1.jar). This value is read FIRST
+#                         libbluray-j2se-1.5.1.jar). This value is read FIRST
 #                         in libbluray src/libbluray/bdj/bdj.c:556 via getenv.
 #                         CRITICAL: the value MUST be the versioned jar name
 #                         because libbluray _find_libbluray_jar1() reconstructs

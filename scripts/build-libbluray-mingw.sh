@@ -17,14 +17,14 @@
 # Env:
 #   CROSS_FILE      meson cross-file for x86_64-w64-mingw32 (required)
 #   SYS             MinGW sysroot / install prefix (default /usr/x86_64-w64-mingw32)
-#   LIBBLURAY_VER   libbluray release to build (default 1.4.1, matches Martchus)
+#   LIBBLURAY_VER   libbluray release to build (default 1.5.1, matches Martchus)
 #   JAVA_HOME       path to a host JDK (optional; BDJ jar built when present)
 #   BDJ_JAR         enabled|auto|disabled (default: auto — enabled iff JAVA_HOME set)
 set -euo pipefail
 
 : "${CROSS_FILE:?set CROSS_FILE to the meson mingw cross-file}"
 SYS="${SYS:-/usr/x86_64-w64-mingw32}"
-LIBBLURAY_VER="${LIBBLURAY_VER:-1.4.1}"
+LIBBLURAY_VER="${LIBBLURAY_VER:-1.5.1}"
 HOST=x86_64-w64-mingw32
 
 # --- resolve BDJ ------------------------------------------------------------
