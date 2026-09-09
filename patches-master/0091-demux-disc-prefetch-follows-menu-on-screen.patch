@@ -1,0 +1,34 @@
+diff --git a/demux/demux_disc.c b/demux/demux_disc.c
+index 5004fc1..2d07ccb 100644
+--- a/demux/demux_disc.c
++++ b/demux/demux_disc.c
+@@ -104,7 +104,8 @@ struct priv {
+     int num_tl_streams;
+     bool seek_reinit;   // needs reinit after seek
+     uint32_t last_discontinuity_id; // Last source-position-jump id seen from the stream.
+-    bool nav_active;    // last interactive-nav state pushed to the cache
++    bool nav_active;    // last interactive-nav capability reported by the stream
++    bool menu_active;   // last "menu on screen" state pushed to the demuxer cache
+     uint32_t eof_log_id;    // last logged EOF state, avoids per-read spam
+     bool eof_log_still;
+ 
+@@ -861,9 +862,17 @@ static bool d_read_packet(struct demuxer *demuxer, struct demux_packet **out_pkt
+     struct stream_nav_state nav = {0};
+     if (stream_control(demuxer->stream, STREAM_CTRL_GET_NAV_STATE, &nav) >= 1) {
+         menu_active = nav.menu_active;
+-        if (nav.nav_active != p->nav_active) {
++        if (nav.nav_active != p->nav_active)
+             p->nav_active = nav.nav_active;
+-            demux_set_nav_active(demuxer, nav.nav_active);
++        // Prefetch gating follows the *menu on screen* signal, not nav_active:
++        // HDMV keeps nav_active=true for the whole session (libbluray reports
++        // no reliable "menu visible" bit), which would otherwise disable the
++        // demuxer cache forever even on plain movie playback started from the
++        // disc menu. Gating on menu_active lets read-ahead (and the cache)
++        // resume as soon as the menu leaves the screen.
++        if (nav.menu_active != p->menu_active) {
++            p->menu_active = nav.menu_active;
++            demux_set_nav_active(demuxer, nav.menu_active);
+         }
+         // DVD holds an EOF at jump boundaries and the player resyncs
+         // through the seek path. BD has no in-band boundary, handle it here,
