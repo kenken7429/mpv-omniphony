@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
-# Clone mpv master HEAD (latest commit on mpv-player/mpv) and apply
-# patches-master/. Produces a buildable tree at ./build/mpv-master-<short-sha>.
+# Clone mpv master and check out a PINNED commit, then apply patches-master/.
+# Produces a buildable tree at ./build/mpv-master-<short-sha>.
 #
-# Variante "HEAD vivant" de apply-patches.sh : pas de pin SHA, chaque exécution
-# prend le dernier commit master. Voir aussi apply-patches.sh pour la cible
-# v0.41.0 reproductible.
+# Pinned instead of tracking master HEAD: upstream mpv keeps moving and the orender
+# patch series (0001-0028) drifts on every master change (e.g. the 2026-09 ad_dsd
+# merge broke f_decoder_wrapper.{c,h}). Pin to a commit whose baseline the patches
+# are known to apply cleanly against, for a reproducible build.
 #
 # Usage: scripts/apply-patches-master.sh
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MPV_URL="https://github.com/mpv-player/mpv.git"
+MPV_PIN="${MPV_PIN:-e8673660ab}"   # mpv master baseline the patch series targets
 WORKDIR="$REPO_ROOT/build"
 CLONE_DIR="$WORKDIR/mpv-master-clone"
 
@@ -22,9 +24,10 @@ if [ ! -d "$CLONE_DIR/.git" ]; then
 else
     echo ">> refreshing existing clone at $CLONE_DIR"
     git -C "$CLONE_DIR" fetch origin master
-    git -C "$CLONE_DIR" reset --hard origin/master
-    git -C "$CLONE_DIR" clean -fdx
 fi
+echo ">> checking out pinned mpv master $MPV_PIN"
+git -C "$CLONE_DIR" checkout "$MPV_PIN"
+git -C "$CLONE_DIR" clean -fdx
 
 SHORT_SHA="$(git -C "$CLONE_DIR" rev-parse --short HEAD)"
 SRC="$WORKDIR/mpv-master-${SHORT_SHA}"
