@@ -141,6 +141,12 @@ jobs:
       - name: Produce jlink jre (java.base+desktop+xml+logging+prefs+rmi) for macOS BD-J
         run: |
           JR="$GITHUB_WORKSPACE/fel-prefix/share/libbluray/jre"
+          # The restored fel-prefix cache can already carry a previously jlinked
+          # jre under share/libbluray/jre. jlink refuses a pre-existing (non-empty)
+          # --output dir with "directory already exists", failing the build on a
+          # cache hit. Regenerate from a clean slate (safe: jre is rebuilt
+          # deterministically below; this only touches the workspace copy).
+          rm -rf "$JR"
           # jlink on macOS produces a JDK-style layout (no Contents wrapper
           # unless we build a full .app). Keep it flat so libbluray's dlopen
           # probe succeeds with BLURAY_JVM_LIB_PATH pointing at lib/server.
