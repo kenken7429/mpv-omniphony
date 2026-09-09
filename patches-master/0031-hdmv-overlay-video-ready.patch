@@ -4,17 +4,42 @@ Date: Mon, 7 Sep 2026 02:00:00 +0800
 Subject: [PATCH] discnav: wait for HDMV background frame at transitions
 
 Adapted from mpv-Yaozhi 0005-hdmv-overlay-video-ready.patch for the
-mpv-omniphony macOS build. Key adaptation: the upstream patch uses
-b->bdj_nav (a field that doesn't exist in our base). We track BD-J
-vs HDMV overlay source via a new bdj_active flag set in the overlay
-callbacks, and derive hdmv_menu = hdmv_mode && !bdj_active.
+mpv-omniphony macOS build against the e8673660ab baseline. Key
+adaptation: the upstream patch uses b->bdj_nav (a field that doesn't
+exist in our base). We track BD-J vs HDMV overlay source via a new
+bdj_active flag set in the overlay callbacks, and derive hdmv_menu =
+hdmv_mode && !bdj_active.
 
 Defer moving-video HDMV graphics during queued resync and initial video
 fill. Preserve input, still menus and BD-J applications without video.
 ---
+diff --git a/player/discnav.c b/player/discnav.c
+index 6eb885edf1..59d64bb926 100644
+--- a/player/discnav.c
++++ b/player/discnav.c
+@@ -514,7 +514,16 @@ void disc_nav_update(struct MPContext *mpctx)
+                    (is_bd || (mp_rect_w(nav.hl.rect) > 0 && mp_rect_h(nav.hl.rect) > 0));
+ 
+     if (is_bd) {
+-        push_bd_overlay(mpctx, s, &nav, visible);
++        // libbluray decodes IG ahead of the video pipeline. At a playlist
++        // hop it can already expose the new buttons while the VO still holds
++        // the old clip (or the startup black frame). Only defer moving-video
++        // HDMV graphics until the queued resync completes and a new frame is
++        // ready. No timer, input delay, or audio/cache restart is needed.
++        // Still menus and BD-J applications may have no video at all.
++        bool await_video = nav.hdmv_menu && !nav.still_active &&
++            mpctx->vo_chain && (nav.drain_pending || mpctx->seek.type ||
++                                mpctx->video_status < STATUS_READY);
++        push_bd_overlay(mpctx, s, &nav, visible && !await_video);
+     } else {
+         push_dvd_overlay(mpctx, &nav);
+         ensure_menu_sub_selection(mpctx, nav.menu_active);
+diff --git a/stream/stream.h b/stream/stream.h
+index 9fda0a8dff..7e76729730 100644
 --- a/stream/stream.h
 +++ b/stream/stream.h
-@@ -170,6 +170,7 @@
+@@ -170,6 +170,7 @@ struct stream_nav_state {
      bool nav_active;         // interactive disc navigation is enabled
      bool menu_active;        // a selectable menu/highlight is currently visible
      bool still_active;       // holding an indefinite still frame
@@ -22,68 +47,39 @@ fill. Preserve input, still menus and BD-J applications without video.
      int  src_w, src_h;       // dimensions of the coordinate space mouse uses
      struct mp_dvdnav_highlight hl; // focused button highlight (DVD only)
      uint32_t change_id; // Bumped whenever any of the above changes
+diff --git a/stream/stream_bluray.c b/stream/stream_bluray.c
+index ac7414a9c4..f48890c91e 100644
 --- a/stream/stream_bluray.c
 +++ b/stream/stream_bluray.c
-@@ -143,6 +143,7 @@
+@@ -143,6 +143,7 @@ struct bluray_priv_s {
+     // bd_register_argb_overlay_proc. Discs that mix HDMV first-play with
      // BD-J menus (or vice versa) need both callbacks registered.
      bool hdmv_mode;
 +    bool bdj_active;            // BD-J overlay callback last fired (vs HDMV)
      struct bd_overlay_plane ig;
-
-@@ -326,6 +327,7 @@
+     struct bd_overlay_plane pg;
+     mp_mutex overlay_lock;
+@@ -326,6 +327,7 @@ static void bd_yuv_overlay_cb(void *handle, const struct bd_overlay_s *ov)
+ 
+     struct bd_overlay_plane *p = &priv->ig;
      mp_mutex_lock(&priv->overlay_lock);
 +    priv->bdj_active = false;
      switch (ov->cmd) {
-
-@@ -422,6 +424,7 @@
+     case BD_OVERLAY_INIT:
+         if (bd_overlay_ensure(priv, p, ov->w, ov->h)) {
+@@ -420,6 +422,7 @@ static void bd_argb_overlay_cb(void *handle, const BD_ARGB_OVERLAY *ov)
+     struct bd_overlay_plane *p = ov->plane == BD_OVERLAY_IG ? &priv->ig
+                                                             : &priv->pg;
      mp_mutex_lock(&priv->overlay_lock);
 +    priv->bdj_active = true;
      switch (ov->cmd) {
-
-@@ -1038,6 +1041,7 @@
+     case BD_ARGB_OVERLAY_INIT:
+         if (bd_overlay_ensure(priv, p, ov->w, ov->h)) {
+@@ -1035,6 +1038,7 @@ static int bluray_stream_control(stream_t *s, int cmd, void *arg)
+         *st = (struct stream_nav_state){
+             .nav_active = true,
              .menu_active = b->ig.visible || b->pg.visible,
 +            .hdmv_menu = b->hdmv_mode && !b->bdj_active,
              .still_active = b->still_active,
-
---- a/player/discnav.c
-+++ b/player/discnav.c
-@@ -44,6 +44,7 @@
-     struct mp_image *bd_image;
-     uint32_t bd_last_change_id;
-+    bool bd_overlay_visible;
-     struct mp_osd_res bd_last_vo_res;
-
-@@ -171,8 +174,9 @@
-     if (!visible) {
--        if (st->overlay_visible)
-+        if (st->bd_overlay_visible)
-             osd_set_bitmaps(mpctx->osd, OSDTYPE_DISC_MENU, NULL);
-+        st->bd_overlay_visible = false;
-         st->bd_last_change_id = 0;
-         st->bd_last_vo_res = (struct mp_osd_res){0};
-         return;
-
-@@ -184,7 +188,6 @@
--    if (st->overlay_visible &&
-+    if (st->bd_overlay_visible &&
-
-@@ -234,6 +237,7 @@
-     st->bd_last_vo_res = vo_res;
-+    st->bd_overlay_visible = true;
- }
-
-@@ -519,7 +525,17 @@
-     if (is_bd) {
--        push_bd_overlay(mpctx, s, &nav, visible);
-+        // libbluray decodes IG ahead of the video pipeline. At a
-+        // playlist hop it can already expose the new buttons while
-+        // the VO still holds the old clip (or the startup black frame).
-+        // Only defer moving-video HDMV graphics until the queued
-+        // resync has completed and a new frame is ready. No timer,
-+        // input delay, or dependency on audio/cache restart is needed.
-+        // Still menus and BD-J applications may have no video at all.
-+        bool await_video = nav.hdmv_menu && !nav.still_active &&
-+            mpctx->vo_chain && (nav.drain_pending || mpctx->seek.type ||
-+                                mpctx->video_status < STATUS_READY);
-+        push_bd_overlay(mpctx, s, &nav, visible && !await_video);
-     } else {
+             .src_w = MPMAX(b->ig.disp_w, b->pg.disp_w),
+             .src_h = MPMAX(b->ig.disp_h, b->pg.disp_h),
