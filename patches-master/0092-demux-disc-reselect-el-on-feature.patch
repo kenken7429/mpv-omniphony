@@ -1,0 +1,47 @@
+diff --git a/demux/demux_disc.c b/demux/demux_disc.c
+index 6307546cb4..b102cb4d14 100644
+--- a/demux/demux_disc.c
++++ b/demux/demux_disc.c
+@@ -484,6 +484,42 @@ static void sync_streams(struct demuxer *demuxer)
+             }
+         }
+     }
++    // cfg: menu->main fix - after mirroring the group, re-select the dependent
++    // EL when its primary BL is already selected, and sync to the slave.
++    // The menu-to-feature hop lands in a mirror that only exists after the
++    // slave streams were recreated, so demux.c auto-select (which scans a
++    // group for dependents only when the primary changes selection) never
++    // fires here: the EL is left unselected and libavformat deselects it,
++    // leaving the source on HDR10 instead of Dolby Vision.
++    for (int n = 0; n < num_slave; n++) {
++        struct sh_stream *o = p->slave_to_outer[n];
++        if (!o || !o->group || !o->dependent_track)
++            continue;
++        struct sh_stream *primary = NULL;
++        for (int m = 0; m < o->group->num_members; m++) {
++            struct sh_stream *mem = o->group->members[m];
++            if (mem && !mem->dependent_track) {
++                primary = mem;
++                break;
++            }
++        }
++        if (!primary || !demux_stream_is_selected(primary))
++            continue;
++        bool el_sel = demux_stream_is_selected(o);
++        if (el_sel) {
++            MP_WARN(demuxer, "XDS: FIX pid=0x%x already sel\n", o->demuxer_id);
++        } else {
++            demuxer_select_track(demuxer, o, MP_NOPTS_VALUE, true);
++            MP_WARN(demuxer, "XDS: FIX selected dep pid=0x%x grp=%d, resync slave\n",
++                    o->demuxer_id, o->group->num_members);
++        }
++        if (n < num_slave) {
++            struct sh_stream *src = demux_get_stream(p->slave, n);
++            if (src)
++                demuxer_select_track(p->slave, src, MP_NOPTS_VALUE, true);
++        }
++    }
++
+ }
+ 
+ static void refresh_disc_metadata(struct demuxer *demuxer);
