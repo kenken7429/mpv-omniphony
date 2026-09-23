@@ -84,6 +84,7 @@ jobs:
             libass luajit lcms2 shaderc glslang \
             molten-vk vulkan-headers vulkan-loader \
             libdvdnav libdvdread \
+            x264 \
             opus fontconfig freetype libxml2
 
       - name: Setup JDK (for BD-J libbluray.jar compile + jlink runtime bundle)
