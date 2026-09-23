@@ -404,11 +404,11 @@ jobs:
           echo "  + MoltenVK ICD/dylib cleaned (Vulkan loader uses brew copy)"
 
           # --- Smoke tests ---------------------------------------------------
-          # Generate a 5-frame testsrc MP4 with brew ffmpeg; use it to verify
+          # Generate a 5-frame testsrc MP4 with our from-source fel-prefix ffmpeg; use it to verify
           # both the null backend (basic binary health) and gpu-next + Vulkan
           # rendering (our most fragile stack — catches MoltenVK crashes early).
           TESTFILE="/tmp/mpv-smoke-test.mp4"
-          ffmpeg -hide_banner -loglevel error -f lavfi \
+          "${GITHUB_WORKSPACE}/fel-prefix/bin/ffmpeg" -hide_banner -loglevel error -f lavfi \
                  -i testsrc=size=64x64:rate=10 \
                  -frames:v 5 -c:v libx264 -pix_fmt yuv420p \
                  -y "$TESTFILE" \
