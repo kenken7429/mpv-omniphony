@@ -426,11 +426,10 @@ jobs:
 
           # Test 2: gpu-next + Vulkan — the full rendering chain. This is where
           # a crashy libplacebo or MoltenVK configuration surfaces.
-          "./$APP/Contents/MacOS/mpv-bin" --no-config \
+          rc=0; "./$APP/Contents/MacOS/mpv-bin" --no-config \
               --vo=gpu-next --gpu-api=vulkan --ao=null \
               --frames=3 --quiet --no-cache \
-              "$TESTFILE" >/tmp/mpv-smoke2.log 2>&1
-          rc=$?
+              "$TESTFILE" >/tmp/mpv-smoke2.log 2>&1 || rc=$?
           if [ $rc -eq 0 ]; then
             echo "  + smoke2 (vo=gpu-next+vulkan): exit 0"
           else
@@ -441,7 +440,6 @@ jobs:
             echo "  ~ smoke2 (vo=gpu-next+vulkan): rc=$rc (CI-only, not fatal)"
             cat /tmp/mpv-smoke2.log
           fi
-          echo "  + smoke2 (vo=gpu-next+vulkan): exit 0"
 
           # Catch any absolute brew/local OR un-relocated FEL-prefix dependency.
           # The leak check no longer excludes MoltenVK — we removed ours above,
