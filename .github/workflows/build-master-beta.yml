@@ -53,10 +53,15 @@ jobs:
     outputs:
       sha: ${{ steps.r.outputs.sha }}
     steps:
+      - uses: actions/checkout@v5
       - id: r
         run: |
-          sha=$(git ls-remote https://code.videolan.org/videolan/libplacebo.git master | cut -f1)
-          echo "libplacebo master HEAD = $sha"
+          # Read the pinned commit from deps-fel/pins-fel.env — we pin to a
+          # known-good version (41ac2980 = v7.371.0) because newer libplacebo
+          # crashes on macOS MoltenVK. When we unpin, revert to ls-remote.
+          source deps-fel/pins-fel.env
+          sha="$LIBPLACEBO_REF"
+          echo "libplacebo pinned ref = $sha"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
   build-macos:
@@ -386,17 +391,55 @@ jobs:
             || { echo "!! wrapper launcher failed to execute" >&2; exit 1; }
           "./$APP/Contents/MacOS/mpv-bin" --gpu-api=help | grep -qi vulkan \
             || echo "!! warning: vulkan gpu-api not listed (MoltenVK detection?)" >&2
-          test -f "$APP/Contents/Frameworks/libMoltenVK.dylib" \
-            || { echo "!! libMoltenVK.dylib not bundled" >&2; exit 1; }
-          test -f "$APP/Contents/Resources/vulkan/icd.d/MoltenVK_icd.json" \
-            || { echo "!! MoltenVK ICD not bundled" >&2; exit 1; }
-          # The bundled libMoltenVK keeps its brew install id by design (dlopen'd
-          # via the ICD's relative path); exclude it. Catch any other absolute
-          # brew/local OR un-relocated FEL-prefix dependency.
+          # --- MoltenVK ICD cleanout ------------------------------------------------
+          # Vulkan loader scans ALL ICD dirs; bundling MoltenVK alongside brew's
+          # copy causes TWO ObjC class registrations (MoltenVK is ObjC-based),
+          # triggering "Class X implemented in both ... mysteriously crash".
+          # We deliberately remove anything macos-bundle pulled in — Vulkan
+          # loader finds brew's /opt/homebrew/etc/vulkan/icd.d/MoltenVK_icd.json
+          # at runtime automatically (macOS has no sandboxing here).
+          rm -rf "$APP/Contents/Frameworks/libMoltenVK.dylib" \
+                 "$APP/Contents/Resources/vulkan/icd.d" \
+                 "$APP/Contents/Frameworks/loader"
+          echo "  + MoltenVK ICD/dylib cleaned (Vulkan loader uses brew copy)"
+
+          # --- Smoke tests ---------------------------------------------------
+          # Generate a 5-frame testsrc MP4 with brew ffmpeg; use it to verify
+          # both the null backend (basic binary health) and gpu-next + Vulkan
+          # rendering (our most fragile stack — catches MoltenVK crashes early).
+          TESTFILE="/tmp/mpv-smoke-test.mp4"
+          ffmpeg -hide_banner -loglevel error -f lavfi \
+                 -i testsrc=size=64x64:rate=10 \
+                 -frames:v 5 -c:v libx264 -pix_fmt yuv420p \
+                 -y "$TESTFILE" \
+            || { echo "!! ffmpeg test pattern generation failed" >&2; exit 1; }
+          echo "  + testfile: $TESTFILE ($(du -h "$TESTFILE" | cut -f1))"
+
+          # Test 1: null vo — binary loads, dylib graph resolves
+          "./$APP/Contents/MacOS/mpv-bin" --no-config \
+              --vo=null --ao=null --frames=3 --quiet \
+              "$TESTFILE" >/tmp/mpv-smoke1.log 2>&1
+          rc=$?
+          [ $rc -eq 0 ] || { echo "!! smoke1 (vo=null) failed rc=$rc:"; cat /tmp/mpv-smoke1.log; exit 1; }
+          echo "  + smoke1 (vo=null): exit 0"
+
+          # Test 2: gpu-next + Vulkan — the full rendering chain. This is where
+          # a crashy libplacebo or MoltenVK configuration surfaces.
+          "./$APP/Contents/MacOS/mpv-bin" --no-config \
+              --vo=gpu-next --gpu-api=vulkan --ao=null \
+              --frames=3 --quiet --no-cache \
+              "$TESTFILE" >/tmp/mpv-smoke2.log 2>&1
+          rc=$?
+          [ $rc -eq 0 ] || { echo "!! smoke2 (vo=gpu-next+vulkan) failed rc=$rc:"; cat /tmp/mpv-smoke2.log; exit 1; }
+          echo "  + smoke2 (vo=gpu-next+vulkan): exit 0"
+
+          # Catch any absolute brew/local OR un-relocated FEL-prefix dependency.
+          # The leak check no longer excludes MoltenVK — we removed ours above,
+          # so any leftover reference is a genuine relocation failure.
           leak=$(find "$APP" -type f \( -name '*.dylib' -o -name mpv-bin \) -print0 \
                  | xargs -0 -I{} sh -c 'otool -L "{}" | awk "NR>1{print \$1}"' \
                  | grep -E "^(/opt/homebrew|/usr/local|$GITHUB_WORKSPACE)" \
-                 | grep -v '/libMoltenVK\.dylib$' | sort -u || true)
+                 | sort -u || true)
           [ -z "$leak" ] || { echo "!! un-bundled absolute references remain:" >&2; echo "$leak" >&2; exit 1; }
           zip -ry "${GITHUB_WORKSPACE}/mpv-omniphony-fel-macos-arm64.zip" "$APP"
 
