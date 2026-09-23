@@ -401,8 +401,7 @@ jobs:
           # at runtime automatically (macOS has no sandboxing here).
           rm -rf "$APP/Contents/Frameworks/libMoltenVK.dylib" \
                  "$APP/Contents/Resources/vulkan/icd.d" \
-                 "$APP/Contents/Frameworks/loader" \
-                 "$APP/Contents/MacOS/lib/libvulkan"*.dylib
+                 "$APP/Contents/Frameworks/loader"
           echo "  + MoltenVK ICD/dylib cleaned (Vulkan loader uses brew copy)"
 
           # --- Smoke tests ---------------------------------------------------
