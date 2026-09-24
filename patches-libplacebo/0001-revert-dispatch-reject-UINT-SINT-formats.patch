@@ -1,0 +1,58 @@
+# Revert of libplacebo commit 3c3bf6e7 ("dispatch: reject rendering to UINT/SINT formats")
+#
+# WHY: 3c3bf6e fires PL_ERR_INVALID_FORMAT when mpv's gpu-next + MoltenVK
+# on macOS submits certain pass configurations (e.g. DV FEL BL/EL merge
+# intermediate render targets). libplacebo's caller doesn't handle this error,
+# leaving a dangling VkCommandBuffer → SIGSEGV in pl_pass_create.
+#
+# WHAT WE KEEP: All 13 other commits in the 41ac2980..HEAD window, which give us:
+#   - vulkan semaphore fixes (b9484d2, de357dc, 3330a51, 2ba21c0) → 收益#8 消帧撕裂
+#   - highest depth format (6111164)                              → 收益#10 DV精度
+#   - clip output signal range (e2972fd)                          → 收益#9 cropdetect精度
+#   - plus colorspace/shaders/renderer cleanups
+#
+# FUTURE: When libplacebo upstream fixes 3c3bf6e (or mpv learns to handle
+# PL_ERR_INVALID_FORMAT), delete this patch and unpin to master.
+
+commit 3c3bf6e7a79b6d76340f596185a4715dff4eca4f
+Author: Niklas Haas <git@haasn.dev>
+Date:   Wed Aug 26 16:47:40 2026 +0200
+
+    dispatch: reject rendering to UINT/SINT formats
+    
+    This would require changes to the output color signature, as well as the
+    renderer.
+    
+    Sponsored-by: nxtedition AB
+    Signed-off-by: Niklas Haas <git@haasn.dev>
+
+diff --git b/src/dispatch.c a/src/dispatch.c
+index 82d5340..7f853db 100644
+--- b/src/dispatch.c
++++ a/src/dispatch.c
+@@ -1232,12 +1232,6 @@ bool pl_dispatch_finish(pl_dispatch dp, const struct pl_dispatch_params *params)
+         goto error;
+     }
+ 
+-    if (tpars->format->type == PL_FMT_UINT || tpars->format->type == PL_FMT_SINT) {
+-        PL_ERR(dp, "Trying to dispatch a shader using an integer target "
+-               "texture. This is not supported by pl_dispatch.\n");
+-        goto error;
+-    }
+-
+     const struct pl_gpu_limits *limits = &dp->gpu->limits;
+     bool can_compute = tpars->storable;
+     if (can_compute && params->blend_params)
+@@ -1501,12 +1495,6 @@ bool pl_dispatch_vertex(pl_dispatch dp, const struct pl_dispatch_vertex_params *
+         goto error;
+     }
+ 
+-    if (tpars->format->type == PL_FMT_UINT || tpars->format->type == PL_FMT_SINT) {
+-        PL_ERR(dp, "Trying to dispatch a shader using an integer target "
+-               "texture. This is not supported by pl_dispatch.\n");
+-        goto error;
+-    }
+-
+     if (pl_shader_is_compute(sh)) {
+         PL_ERR(dp, "Trying to dispatch a compute shader using pl_dispatch_vertex.");
+         goto error;
