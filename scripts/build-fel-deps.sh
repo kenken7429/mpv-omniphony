@@ -100,13 +100,15 @@ fi
 # 2. libplacebo (upstream master, PL_API_VER >= 370) — has the FEL API.
 # ---------------------------------------------------------------------------
 log "libplacebo $LIBPLACEBO_REF"
+# LIBPLACEBO_REF may be a commit hash (not just a branch/tag), so we can't use
+# `git clone --branch` — that flag only accepts refs. Clone master first, then
+# checkout the pinned ref. Also works if LIBPLACEBO_REF IS a branch/tag.
 if [ ! -d "$WORK/libplacebo/.git" ]; then
-    git clone --branch "$LIBPLACEBO_REF" --recurse-submodules "$LIBPLACEBO_URL" "$WORK/libplacebo"
-else
-    git -C "$WORK/libplacebo" fetch origin "$LIBPLACEBO_REF"
-    git -C "$WORK/libplacebo" reset --hard "origin/$LIBPLACEBO_REF"
-    git -C "$WORK/libplacebo" submodule update --init --recursive
+    git clone --recurse-submodules "$LIBPLACEBO_URL" "$WORK/libplacebo"
 fi
+git -C "$WORK/libplacebo" fetch origin
+git -C "$WORK/libplacebo" checkout -f "$LIBPLACEBO_REF"
+git -C "$WORK/libplacebo" submodule update --init --recursive
 PLACEBO_SHA="$(git -C "$WORK/libplacebo" rev-parse --short HEAD)"
 
 # Keep local integration fixes separate from upstream tracking. In particular,
@@ -193,7 +195,7 @@ git -C "$WORK/ffmpeg" clean -fdx >/dev/null 2>&1 || true
 # native opus decoder (mpv-omniphony#64 shipped FEL bundles without it).
 ff_args=(--prefix="$PREFIX" --enable-shared --disable-static
          --enable-gpl --enable-version3 --disable-doc
-         --enable-libopus)
+         --enable-libx264 --enable-libopus)
 # NVIDIA nvdec/cuvid only where NVIDIA exists; macOS auto-detects VideoToolbox
 # instead, which is fine — FEL needs only the dovi_split BSF + libdovi.
 [ "$MACOS" = 1 ] || ff_args+=(--enable-ffnvcodec --enable-nvdec --enable-cuvid)
