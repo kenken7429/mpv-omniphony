@@ -39,7 +39,7 @@ on:
 env:
   # Rolling (cron/dispatch/path-push) builds track Omniphony main; a tagged beta
   # pins liborender to the matching release line for reproducibility.
-  OMNIPHONY_REF: ${{ startsWith(github.ref, 'refs/tags/') && 'v0.5.0' || 'main' }}
+  OMNIPHONY_REF: ${{ startsWith(github.ref, 'refs/tags/') && 'v0.6.0' || 'main' }}
   # Java LTS used for BD-J (libbluray.jar compile + jlink runtime bundled on
   # macOS/Linux). Temurin 21 LTS ships on all runners. BDJ is tied to the
   # libbluray source build — it can't use distro/homebrew libbluray (those
