@@ -13,6 +13,14 @@ on:
   workflow_dispatch:
   schedule:
     - cron: '0 5 * * *' # daily 05:00 UTC (after Omniphony's 04:00 build)
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/integration-build.yml'
+      - '.github/workflows/build-master-beta.yml'
+      - 'scripts/build-*.sh'
+      - 'patches-master/**'
+      - 'deps-fel/**'
 
 env:
   MPV_TAG: master
