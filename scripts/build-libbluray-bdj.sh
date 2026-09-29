@@ -24,6 +24,8 @@
 #   BDJ_TYPE      j2se|j2me (default: j2se — Java SE profile)
 set -euo pipefail
 
+
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PREFIX="${PREFIX:-$PWD/fel-prefix}"
 LIBBLURAY_VER="${LIBBLURAY_VER:-1.5.1}"
@@ -90,6 +92,8 @@ meson_args=(
   -Dlibxml2=auto
   -Dfontconfig=auto
   -Dfreetype=auto
+
+
 )
 [ "${BDJ_JAR}" = "enabled" ] && [ -n "${JAVA_HOME:-}" ] && meson_args+=(-Djdk_home="${JAVA_HOME}")
 

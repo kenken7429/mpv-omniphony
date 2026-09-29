@@ -36,7 +36,8 @@ jobs:
           # libbluray/libdvdnav add BD/DVD/ISO playback (also bundled below).
           brew install meson ninja pkg-config ffmpeg libass libplacebo luajit \
             molten-vk vulkan-loader vulkan-headers \
-            libbluray libdvdnav libdvdread
+            libbluray libdvdnav libdvdread \
+            libaacs libbdplus
 
       - name: Checkout Omniphony (renderer source)
         uses: actions/checkout@v5
@@ -108,6 +109,24 @@ jobs:
           # loader's exe-dir candidate is Contents/MacOS), before the codesign.
           cp "$GITHUB_WORKSPACE/sysroot/usr/lib/liborender.dylib" \
              mpv-omniphony.app/Contents/MacOS/liborender.dylib
+          # --- AACS / BD+ decryption dylibs (dlopen, NOT OTD-linked) ---
+          # libbluray dlopen("libaacs"/"libbdplus") at runtime, so dylib_unhell
+          # never relocates them — copy manually BEFORE codesign.
+          LIBDIR=mpv-omniphony.app/Contents/MacOS/lib
+          mkdir -p "$LIBDIR"
+          AACS_DYLIB=$(brew --prefix libaacs 2>/dev/null)/lib/libaacs.0.dylib
+          BDPLUS_DYLIB=$(brew --prefix libbdplus 2>/dev/null)/lib/libbdplus.0.dylib
+          if [ -f "$AACS_DYLIB" ]; then
+            cp "$AACS_DYLIB" "$LIBDIR/"; chmod u+w "$LIBDIR/libaacs.0.dylib"
+            install_name_tool -id "@executable_path/lib/libaacs.0.dylib" "$LIBDIR/libaacs.0.dylib"
+            echo "  + libaacs.0.dylib (AACS)"
+          fi
+          if [ -f "$BDPLUS_DYLIB" ]; then
+            cp "$BDPLUS_DYLIB" "$LIBDIR/"; chmod u+w "$LIBDIR/libbdplus.0.dylib"
+            install_name_tool -id "@executable_path/lib/libbdplus.0.dylib" "$LIBDIR/libbdplus.0.dylib"
+            echo "  + libbdplus.0.dylib (BD+)"
+          fi
+
           codesign --force --deep --sign - mpv-omniphony.app
           ./mpv-omniphony.app/Contents/MacOS/mpv --version
           ./mpv-omniphony.app/Contents/MacOS/mpv --gpu-api=help | grep -qi vulkan \

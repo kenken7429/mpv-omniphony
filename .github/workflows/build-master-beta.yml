@@ -84,6 +84,7 @@ jobs:
             libass luajit lcms2 shaderc glslang \
             molten-vk vulkan-headers vulkan-loader \
             libdvdnav libdvdread \
+            libaacs libbdplus \
             x264 \
             opus fontconfig freetype libxml2
 
@@ -282,6 +283,24 @@ jobs:
               install_name_tool -change "$ref" "@executable_path/lib/$base" "$obj" 2>/dev/null || true
             done < <(otool -L "$obj" | awk 'NR>1 {print $1}' | grep -E "^($PREFIX|/opt/homebrew|/usr/local)/")
           done
+
+          # --- AACS / BD+ decryption dylibs (dlopen, NOT OTD-linked) ---
+          # libbluray uses dlopen("libaacs"/"libbdplus") at runtime, so dylib_unhell
+          # never relocates them — they must be copied into bundle/lib manually.
+          AACS_DYLIB=$(brew --prefix libaacs)/lib/libaacs.0.dylib
+          BDPLUS_DYLIB=$(brew --prefix libbdplus)/lib/libbdplus.0.dylib
+          if [ -f "$AACS_DYLIB" ]; then
+            cp "$AACS_DYLIB" "$LIBDIR/libaacs.0.dylib"
+            chmod u+w "$LIBDIR/libaacs.0.dylib"
+            install_name_tool -id "@executable_path/lib/libaacs.0.dylib" "$LIBDIR/libaacs.0.dylib"
+            echo "  + libaacs.0.dylib (AACS decryption)"
+          fi
+          if [ -f "$BDPLUS_DYLIB" ]; then
+            cp "$BDPLUS_DYLIB" "$LIBDIR/libbdplus.0.dylib"
+            chmod u+w "$LIBDIR/libbdplus.0.dylib"
+            install_name_tool -id "@executable_path/lib/libbdplus.0.dylib" "$LIBDIR/libbdplus.0.dylib"
+            echo "  + libbdplus.0.dylib (BD+ decryption)"
+          fi
 
           # --- BD-J: 3 jars + jlinked 6-module JRE --------------------------
           # libbluray dlopen's the JVM via a few env-var probes (BLURAY_JVM_HOME,
