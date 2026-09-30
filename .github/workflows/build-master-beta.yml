@@ -24,6 +24,7 @@ on:
     # release-process continuity even though FEL is no longer a fork.)
     tags:
       - 'v*-fel*'
+      - 'mpv-v*-fel*'  # author uses mpv-v prefix
     paths:
       - 'patches-master/**'
       - 'deps-fel/**'
