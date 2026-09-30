@@ -267,7 +267,13 @@ jobs:
           # worklist. Runs before the Brand step's codesign + leak gate.
           APP=_b/mpv.app
           LIBDIR="$APP/Contents/MacOS/lib"; mkdir -p "$LIBDIR"
-          worklist=("$APP/Contents/MacOS/mpv")
+          # Both mpv (shell shim) and mpv-bin (real Mach-O binary) need scanning
+          # Brand step renames mpv → mpv-bin, so we glob all Mach-O executables
+          worklist=()
+          for b in "$APP/Contents/MacOS"/*; do
+            [ -f "$b" ] || continue
+            file "$b" 2>/dev/null | grep -q "Mach-O" && worklist+=("$b")
+          done
           for f in "$LIBDIR"/*.dylib; do [ -f "$f" ] && worklist+=("$f"); done
           while [ ${#worklist[@]} -gt 0 ]; do
             obj="${worklist[0]}"; worklist=("${worklist[@]:1}")
