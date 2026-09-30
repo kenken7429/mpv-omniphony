@@ -281,7 +281,7 @@ jobs:
                 worklist+=("$LIBDIR/$base"); echo "  + relocated $base"
               fi
               install_name_tool -change "$ref" "@executable_path/lib/$base" "$obj" 2>/dev/null || true
-            done < <(otool -L "$obj" | awk 'NR>1 {print $1}' | grep -E "^($PREFIX|/opt/homebrew|/usr/local)/")
+            done < <(otool -L "$obj" | awk 'NR>1 {print $1}' | grep -E "^($PREFIX|/opt/homebrew|/opt/homebrew/opt|/usr/local)/")
           done
 
           # --- AACS / BD+ decryption dylibs (dlopen, NOT OTD-linked) ---
@@ -465,7 +465,7 @@ jobs:
           # so any leftover reference is a genuine relocation failure.
           leak=$(find "$APP" -type f \( -name '*.dylib' -o -name mpv-bin \) -print0 \
                  | xargs -0 -I{} sh -c 'otool -L "{}" | awk "NR>1{print \$1}"' \
-                 | grep -E "^(/opt/homebrew|/usr/local|$GITHUB_WORKSPACE)" \
+                 | grep -E "^(/opt/homebrew|/opt/homebrew/opt|/usr/local|$GITHUB_WORKSPACE)" \
                  | sort -u || true)
           [ -z "$leak" ] || { echo "!! un-bundled absolute references remain:" >&2; echo "$leak" >&2; exit 1; }
           zip -ry "${GITHUB_WORKSPACE}/mpv-omniphony-fel-macos-arm64.zip" "$APP"
