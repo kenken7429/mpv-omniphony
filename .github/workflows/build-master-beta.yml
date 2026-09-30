@@ -308,6 +308,28 @@ jobs:
             echo "  + libbdplus.0.dylib (BD+ decryption)"
           fi
 
+          # --- Second relink pass: libaacs/libbdplus are dlopen so they were
+          #     invisible to the first worklist loop above. Their transitive
+          #     deps (libgcrypt → libgpg-error) need the same relocation.
+          worklist=()
+          for f in "$LIBDIR"/libaacs*.dylib "$LIBDIR"/libbdplus*.dylib; do
+            [ -f "$f" ] && worklist+=("$f")
+          done
+          while [ ${#worklist[@]} -gt 0 ]; do
+            obj="${worklist[0]}"; worklist=("${worklist[@]:1}")
+            while read -r ref; do
+              base=$(basename "$ref")
+              if [ ! -f "$LIBDIR/$base" ]; then
+                real="$ref"; [ -f "$real" ] || real="$PREFIX/lib/$base"
+                [ -f "$real" ] || { echo "  ! NOT FOUND (aacs-pass): $ref" >&2; continue; }
+                cp "$real" "$LIBDIR/$base"; chmod u+w "$LIBDIR/$base"
+                install_name_tool -id "@executable_path/lib/$base" "$LIBDIR/$base"
+                worklist+=("$LIBDIR/$base"); echo "  + relocated(aacs-pass) $base"
+              fi
+              install_name_tool -change "$ref" "@executable_path/lib/$base" "$obj" 2>/dev/null || true
+            done < <(otool -L "$obj" | awk 'NR>1 {print $1}' | grep -E "^($PREFIX|/opt/homebrew|/opt/homebrew/opt|/usr/local)/")
+          done
+
           # --- BD-J: 3 jars + jlinked 6-module JRE --------------------------
           # libbluray dlopen's the JVM via a few env-var probes (BLURAY_JVM_HOME,
           # BLURAY_JVM_LIB_PATH, JAVA_HOME/lib). It also looks for libbluray.jar
